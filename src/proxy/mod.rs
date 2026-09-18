@@ -2,7 +2,15 @@ use crate::agent::{AgentError, UnixSocketAgent, UpstreamAgent, read_frame, write
 use std::collections::BTreeSet;
 use std::fmt;
 use std::io;
+use std::os::unix::net::UnixListener;
 use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 const FAILURE: u8 = 5;
 const REQUEST_IDENTITIES: u8 = 11;
@@ -104,9 +112,62 @@ impl FilteredAgent {
     }
 }
 
+pub struct ProxyServer {
+    path: PathBuf,
+    running: Arc<AtomicBool>,
+    worker: Option<JoinHandle<()>>,
+}
+
+impl ProxyServer {
+    pub fn bind(path: impl Into<PathBuf>, agent: FilteredAgent) -> Result<Self, ProxyError> {
+        let path = path.into();
+        let listener = UnixListener::bind(&path).map_err(ProxyError::Io)?;
+        listener.set_nonblocking(true).map_err(ProxyError::Io)?;
+        let running = Arc::new(AtomicBool::new(true));
+        let worker_running = running.clone();
+        let worker = thread::spawn(move || {
+            while worker_running.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let agent = agent.clone();
+                        thread::spawn(move || {
+                            let _ = agent.serve_connection(stream);
+                        });
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(10))
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Ok(Self {
+            path,
+            running,
+            worker: Some(worker),
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ProxyServer {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Relaxed);
+        let _ = UnixStream::connect(&self.path);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
 #[derive(Debug)]
 pub enum ProxyError {
     Agent(AgentError),
+    Io(io::Error),
     MalformedResponse,
 }
 impl From<AgentError> for ProxyError {
@@ -118,6 +179,7 @@ impl fmt::Display for ProxyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Agent(error) => error.fmt(f),
+            Self::Io(error) => write!(f, "proxy socket error: {error}"),
             Self::MalformedResponse => f.write_str("malformed SSH agent response"),
         }
     }
