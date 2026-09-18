@@ -96,10 +96,21 @@ fn openssh_agent_identities_are_filtered_by_the_proxy() {
         .env("SSH_AUTH_SOCK", proxy.path())
         .output()
         .unwrap();
+    let signature_check = Command::new("ssh-add")
+        .arg("-T")
+        .arg(key.with_extension("pub"))
+        .env("SSH_AUTH_SOCK", proxy.path())
+        .output()
+        .unwrap();
     drop(proxy);
     stop_agent(&mut agent);
 
     assert!(output.status.success(), "ssh-add failed: {:?}", output);
+    assert!(
+        signature_check.status.success(),
+        "ssh-add signature check failed: {:?}",
+        signature_check
+    );
     assert_eq!(String::from_utf8(output.stdout).unwrap(), public_key);
     assert!(!proxy_socket.exists());
 }

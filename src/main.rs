@@ -46,6 +46,8 @@ enum Command {
 enum ImportCommand {
     Agent {
         name: String,
+        #[arg(long)]
+        scope: String,
         #[arg(long, value_enum, default_value_t = OutputFormat::Yaml)]
         format: OutputFormat,
     },
@@ -94,8 +96,13 @@ fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
         Command::Doctor => doctor(&config)?,
         Command::Exec { scope, command } => return execute(&config, scope.parse()?, command),
         Command::Import {
-            command: ImportCommand::Agent { name, format },
-        } => import_agent(&config, &name, format)?,
+            command:
+                ImportCommand::Agent {
+                    name,
+                    scope,
+                    format,
+                },
+        } => import_agent(&config, &name, scope.parse()?, format)?,
         Command::Config {
             command: ConfigCommand::Check,
         } => println!("configuration is valid"),
@@ -106,6 +113,7 @@ fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
 fn import_agent(
     config: &Config,
     name: &str,
+    scope: kmux::scope::ScopePath,
     format: OutputFormat,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let name = kmux::agent::AgentName::new(name)?;
@@ -116,15 +124,16 @@ fn import_agent(
             println!("keys:");
             for (index, identity) in identities.iter().enumerate() {
                 println!(
-                    "  identity-{}:\n    fingerprint: \"{}\"\n    agent: {}",
+                    "  identity-{}:\n    fingerprint: \"{}\"\n    agent: {}\n    scopes: [\"{}\"]",
                     index + 1,
                     identity.fingerprint,
-                    name
+                    name,
+                    scope
                 );
             }
         }
         OutputFormat::Json => {
-            let keys = identities.iter().enumerate().map(|(index, identity)| (format!("identity-{}", index + 1), serde_json::json!({"fingerprint": identity.fingerprint.as_str(), "agent": name.as_str()}))).collect::<serde_json::Map<_, _>>();
+            let keys = identities.iter().enumerate().map(|(index, identity)| (format!("identity-{}", index + 1), serde_json::json!({"fingerprint": identity.fingerprint.as_str(), "agent": name.as_str(), "scopes": [scope.to_string()]}))).collect::<serde_json::Map<_, _>>();
             println!(
                 "{}",
                 serde_json::to_string_pretty(&serde_json::json!({"keys": keys}))?
@@ -133,10 +142,11 @@ fn import_agent(
         OutputFormat::Toml => {
             for (index, identity) in identities.iter().enumerate() {
                 println!(
-                    "[keys.identity-{}]\nfingerprint = \"{}\"\nagent = \"{}\"",
+                    "[keys.identity-{}]\nfingerprint = \"{}\"\nagent = \"{}\"\nscopes = [\"{}\"]",
                     index + 1,
                     identity.fingerprint,
-                    name
+                    name,
+                    scope
                 );
             }
         }
@@ -239,18 +249,28 @@ fn print_scopes(config: &Config) {
 }
 
 fn doctor(config: &Config) -> Result<(), Box<dyn std::error::Error>> {
-    let mut available = BTreeSet::new();
+    let mut available = std::collections::BTreeMap::new();
     for (name, definition) in config.agents() {
         let agent = UnixSocketAgent::new(definition.socket().to_owned());
         let identities = agent.identities()?;
         println!("ok\tagent\t{name}\t{} identities", identities.len());
-        available.extend(identities.into_iter().map(|identity| identity.fingerprint));
+        available.insert(
+            name.clone(),
+            identities
+                .into_iter()
+                .map(|identity| identity.fingerprint)
+                .collect::<BTreeSet<_>>(),
+        );
     }
 
     let missing = config
         .catalog()
         .entries()
-        .filter(|entry| !available.contains(entry.fingerprint()))
+        .filter(|entry| {
+            !available
+                .get(entry.agent())
+                .is_some_and(|keys| keys.contains(entry.fingerprint()))
+        })
         .map(|entry| format!("{} ({})", entry.alias(), entry.fingerprint()))
         .collect::<Vec<_>>();
     if !missing.is_empty() {

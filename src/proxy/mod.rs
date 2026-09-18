@@ -146,6 +146,9 @@ impl ProxyServer {
             while worker_running.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        if !worker_running.load(Ordering::Relaxed) {
+                            break;
+                        }
                         let agent = agent.clone();
                         let connection_id = connection_ids.fetch_add(1, Ordering::Relaxed) + 1;
                         thread::spawn(move || {

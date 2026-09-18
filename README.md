@@ -30,7 +30,7 @@ kmux --config config.yaml config check
 kmux --config config.yaml doctor
 kmux --config config.yaml keys
 kmux --config config.yaml scopes
-kmux --config config.yaml import agent primary --format yaml
+kmux --config config.yaml import agent primary --scope company/production --format yaml
 kmux --config config.yaml exec company/production -- ssh deploy@example.com
 ```
 
