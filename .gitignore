@@ -5,6 +5,7 @@
 !.agents/memory/
 !.agents/prompts/
 !.agents/skills/
+!.agents/skills/**
 !.agents/artifacts/
 .agents/artifacts/*
 !.agents/artifacts/.gitkeep

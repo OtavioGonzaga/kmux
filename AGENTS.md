@@ -13,6 +13,7 @@ Use `AGENTS.md` as the shared entry point for instructions for all AI coding age
 
 - Persistent shared knowledge (versioned) belongs in `.agents/memory/`.
 - Reusable prompts (versioned) belong in `.agents/prompts/`.
+- Reusable agent skills (versioned) belong in `.agents/skills/`.
 - Temporary artifacts (not versioned) belong in `.agents/artifacts/`.
 - Do not create Markdown artifacts in the repository root unless explicitly requested.
 
