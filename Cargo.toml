@@ -2,6 +2,9 @@
 name = "kmux"
 version = "0.1.0"
 edition = "2024"
+description = "Run commands with a filtered view of an SSH agent"
+categories = ["command-line-utilities", "authentication"]
+keywords = ["ssh", "agent", "security"]
 
 [dependencies]
 base64 = "0.23.1"

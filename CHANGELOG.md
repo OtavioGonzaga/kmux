@@ -19,4 +19,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Changed
 
+- Added usage, configuration, and security documentation for the pre-release CLI.
+
+### Changed
+
 - Version reusable agent skills alongside project instructions and prompts.
