@@ -61,6 +61,10 @@ impl KeyCatalog {
         self.entries.get(alias)
     }
 
+    pub fn entries(&self) -> impl Iterator<Item = &KeyEntry> {
+        self.entries.values()
+    }
+
     pub fn query(&self, query: &ScopeQuery) -> Vec<&KeyEntry> {
         self.entries
             .values()
