@@ -1,0 +1,11 @@
+/target
+
+.agents/*
+!.agents/README.md
+!.agents/memory/
+!.agents/prompts/
+!.agents/skills/
+!.agents/artifacts/
+.agents/artifacts/*
+!.agents/artifacts/.gitkeep
+tasks/*

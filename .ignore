@@ -1,0 +1,2 @@
+# Ignore file to override default gitignore rules to use ripgrep
+!.agents/**/*
