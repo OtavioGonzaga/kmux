@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use kmux::agent::{UnixSocketAgent, UpstreamAgent};
 use kmux::config::Config;
 use kmux::proxy::{FilteredAgent, ProxyServer};
@@ -26,10 +26,28 @@ enum Command {
         #[arg(required = true, trailing_var_arg = true)]
         command: Vec<String>,
     },
+    Import {
+        #[command(subcommand)]
+        command: ImportCommand,
+    },
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+}
+#[derive(Subcommand)]
+enum ImportCommand {
+    Agent {
+        name: String,
+        #[arg(long, value_enum, default_value_t = OutputFormat::Yaml)]
+        format: OutputFormat,
+    },
+}
+#[derive(Clone, ValueEnum)]
+enum OutputFormat {
+    Yaml,
+    Json,
+    Toml,
 }
 #[derive(Subcommand)]
 enum ConfigCommand {
@@ -56,11 +74,55 @@ fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
         Command::Scopes => print_scopes(&config),
         Command::Doctor => doctor(&config)?,
         Command::Exec { scope, command } => return execute(&config, scope.parse()?, command),
+        Command::Import {
+            command: ImportCommand::Agent { name, format },
+        } => import_agent(&config, &name, format)?,
         Command::Config {
             command: ConfigCommand::Check,
         } => println!("configuration is valid"),
     }
     Ok(0)
+}
+
+fn import_agent(
+    config: &Config,
+    name: &str,
+    format: OutputFormat,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let name = kmux::agent::AgentName::new(name)?;
+    let definition = config.agents().get(&name).ok_or("unknown agent")?;
+    let identities = UnixSocketAgent::new(definition.socket().to_owned()).identities()?;
+    match format {
+        OutputFormat::Yaml => {
+            println!("keys:");
+            for (index, identity) in identities.iter().enumerate() {
+                println!(
+                    "  identity-{}:\n    fingerprint: \"{}\"\n    agent: {}",
+                    index + 1,
+                    identity.fingerprint,
+                    name
+                );
+            }
+        }
+        OutputFormat::Json => {
+            let keys = identities.iter().enumerate().map(|(index, identity)| (format!("identity-{}", index + 1), serde_json::json!({"fingerprint": identity.fingerprint.as_str(), "agent": name.as_str()}))).collect::<serde_json::Map<_, _>>();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({"keys": keys}))?
+            );
+        }
+        OutputFormat::Toml => {
+            for (index, identity) in identities.iter().enumerate() {
+                println!(
+                    "[keys.identity-{}]\nfingerprint = \"{}\"\nagent = \"{}\"",
+                    index + 1,
+                    identity.fingerprint,
+                    name
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn execute(

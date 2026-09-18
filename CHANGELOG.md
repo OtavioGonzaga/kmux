@@ -15,6 +15,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Filtered proxy policy that blocks unselected signatures and mutable or unknown operations.
 - Runtime upstream diagnostics through `kmux doctor`.
 - Candidate resolution with interactive selection and non-interactive ambiguity errors.
+- Public identity import snippets through `kmux import agent`.
 
 ### Changed
 
