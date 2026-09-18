@@ -24,18 +24,14 @@ impl Config {
             path: path.to_owned(),
             source,
         })?;
-        let schema = match path.extension().and_then(|extension| extension.to_str()) {
-            Some("yaml" | "yml") => serde_yaml::from_str(&content)
-                .map_err(|source| ConfigError::Parse(source.to_string()))?,
-            Some("json") => serde_json::from_str(&content)
-                .map_err(|source| ConfigError::Parse(source.to_string()))?,
-            Some("toml") => {
-                toml::from_str(&content).map_err(|source| ConfigError::Parse(source.to_string()))?
-            }
-            _ => return Err(ConfigError::UnsupportedFormat(path.to_owned())),
-        };
-
-        Self::from_schema(schema)
+        let decoder: &dyn ConfigDecoder =
+            match path.extension().and_then(|extension| extension.to_str()) {
+                Some("yaml" | "yml") => &YamlConfigDecoder,
+                Some("json") => &JsonConfigDecoder,
+                Some("toml") => &TomlConfigDecoder,
+                _ => return Err(ConfigError::UnsupportedFormat(path.to_owned())),
+            };
+        Self::from_schema(decoder.decode(&content)?)
     }
 
     pub fn discover(explicit: Option<&Path>) -> Result<ConfigPath, ConfigError> {
@@ -72,6 +68,10 @@ impl Config {
         &self.catalog
     }
 
+    pub fn from_parts(agents: BTreeMap<AgentName, AgentDefinition>, catalog: KeyCatalog) -> Self {
+        Self { agents, catalog }
+    }
+
     fn from_schema(schema: ConfigSchema) -> Result<Self, ConfigError> {
         if schema.version != SUPPORTED_VERSION {
             return Err(ConfigError::UnsupportedVersion(schema.version));
@@ -86,7 +86,9 @@ impl Config {
                 AgentKind::Unix => AgentDefinition::new(name.clone(), socket),
             }
             .map_err(|source| ConfigError::Validation(source.to_string()))?;
-            agents.insert(name, agent);
+            if agents.insert(name.clone(), agent).is_some() {
+                return Err(ConfigError::DuplicateAgent(name));
+            }
         }
 
         let mut entries = Vec::new();
@@ -138,6 +140,7 @@ pub enum ConfigError {
     ConfigNotFound(PathBuf),
     AmbiguousConfig(Vec<PathBuf>),
     UnsupportedVersion(u32),
+    DuplicateAgent(AgentName),
     UnknownAgent(AgentName),
     Validation(String),
 }
@@ -170,6 +173,10 @@ impl fmt::Display for ConfigError {
             Self::UnsupportedVersion(version) => {
                 write!(formatter, "unsupported config version {version}")
             }
+            Self::DuplicateAgent(agent) => write!(
+                formatter,
+                "duplicate agent name '{agent}' after normalization"
+            ),
             Self::UnknownAgent(agent) => {
                 write!(formatter, "key references unknown agent '{agent}'")
             }
@@ -187,9 +194,35 @@ impl std::error::Error for ConfigError {
     }
 }
 
+pub trait ConfigDecoder {
+    fn decode(&self, source: &str) -> Result<ConfigSchema, ConfigError>;
+}
+
+pub struct YamlConfigDecoder;
+pub struct JsonConfigDecoder;
+pub struct TomlConfigDecoder;
+
+impl ConfigDecoder for YamlConfigDecoder {
+    fn decode(&self, source: &str) -> Result<ConfigSchema, ConfigError> {
+        serde_yaml::from_str(source).map_err(|error| ConfigError::Parse(error.to_string()))
+    }
+}
+
+impl ConfigDecoder for JsonConfigDecoder {
+    fn decode(&self, source: &str) -> Result<ConfigSchema, ConfigError> {
+        serde_json::from_str(source).map_err(|error| ConfigError::Parse(error.to_string()))
+    }
+}
+
+impl ConfigDecoder for TomlConfigDecoder {
+    fn decode(&self, source: &str) -> Result<ConfigSchema, ConfigError> {
+        toml::from_str(source).map_err(|error| ConfigError::Parse(error.to_string()))
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ConfigSchema {
+pub struct ConfigSchema {
     version: u32,
     #[serde(default)]
     agents: BTreeMap<String, AgentSchema>,
@@ -286,5 +319,18 @@ mod tests {
         assert!(Config::load(&unknown_agent).is_err());
         fs::remove_file(unknown_field).unwrap();
         fs::remove_file(unknown_agent).unwrap();
+    }
+
+    #[test]
+    fn rejects_agent_names_that_collide_after_normalization() {
+        let path = write_config(
+            "yaml",
+            "version: 1\nagents:\n  Work:\n    type: unix\n    socket: /tmp/work.sock\n  work:\n    type: unix\n    socket: /tmp/other.sock\n",
+        );
+        assert!(matches!(
+            Config::load(&path),
+            Err(super::ConfigError::DuplicateAgent(_))
+        ));
+        fs::remove_file(path).unwrap();
     }
 }

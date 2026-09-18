@@ -45,6 +45,10 @@ impl ScopePath {
                 .zip(&other.0)
                 .all(|(left, right)| left == right)
     }
+
+    pub fn ancestors(&self) -> impl Iterator<Item = Self> + '_ {
+        (1..=self.0.len()).map(|length| Self(self.0[..length].to_vec()))
+    }
 }
 
 impl FromStr for ScopePath {
@@ -137,5 +141,18 @@ mod tests {
         assert!(parent.is_prefix_of(&parent));
         assert!(parent.is_prefix_of(&child));
         assert!(!child.is_prefix_of(&parent));
+    }
+
+    #[test]
+    fn ancestors_are_returned_from_root_to_self() {
+        let scope = ScopePath::from_str("company/postgres/production").unwrap();
+        let ancestors = scope
+            .ancestors()
+            .map(|scope| scope.to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ancestors,
+            ["company", "company/postgres", "company/postgres/production"]
+        );
     }
 }

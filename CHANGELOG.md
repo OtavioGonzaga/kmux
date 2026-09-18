@@ -18,11 +18,13 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Public identity import snippets through `kmux import agent`.
 - Structured JSON logging controlled by `KMUX_LOG` or `RUST_LOG`.
 - Signal-aware `exec` cleanup and proxy, CLI, and OpenSSH integration coverage.
+- GitHub Actions validation for formatting, Clippy, and tests on Linux.
 
 ### Changed
 
 - Added usage, configuration, and security documentation for the pre-release CLI.
-
-### Changed
-
 - Version reusable agent skills alongside project instructions and prompts.
+- Split CLI parsing and command orchestration into focused functional modules.
+- Only query upstream agents referenced by the requested scope.
+- Include derived parent scopes in `kmux scopes` and improve import alias suggestions from public comments.
+- Track active proxy connections so shutdown closes downstream and upstream workers before socket removal.

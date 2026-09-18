@@ -34,7 +34,9 @@ kmux --config config.yaml import agent primary --scope company/production --form
 kmux --config config.yaml exec company/production -- ssh deploy@example.com
 ```
 
-`exec` creates a temporary Unix socket, passes it to the child only through `SSH_AUTH_SOCK`, and removes it after the child exits. A parent scope matches keys declared in that scope and descendant scopes; a child scope does not implicitly select ancestor keys.
+`scopes` lists configured scopes and their derived ancestors, in sorted order. `import agent` emits a configuration snippet only; it derives readable, deterministic aliases from public agent comments and never changes the configuration file.
+
+`exec` creates a temporary Unix socket, passes it to the child only through `SSH_AUTH_SOCK`, and removes it after the child exits. A parent scope matches keys declared in that scope and descendant scopes; a child scope does not implicitly select ancestor keys. When more than one key matches, `kmux` selects through the controlling terminal when one is available (including when command output is piped); otherwise it reports the candidate list. The child exit code is preserved.
 
 ## Security
 
@@ -43,7 +45,8 @@ kmux --config config.yaml exec company/production -- ssh deploy@example.com
 - Mutable and unknown agent operations fail closed.
 - Each downstream connection receives a distinct upstream connection.
 - `session-bind@openssh.com` is forwarded on that connection; unsupported extensions are rejected.
+- Shutting down the proxy closes active downstream and upstream connections before removing its socket.
 
 ## Limitations
 
-Agent forwarding and `session-bind` require upstream-agent support. Bitwarden and other upstream integrations must be validated manually before production use.
+Agent forwarding and `session-bind` require upstream-agent support. The automated OpenSSH coverage verifies `ssh-add -L` and `ssh-add -T`; full `ssh -A` forwarding remains a manual integration check. To verify it against a host that accepts forwarding, run `kmux exec <scope> -- ssh -A <host> ssh-add -L` and confirm only the selected public key is listed. Bitwarden and other upstream integrations must be validated manually before production use.
