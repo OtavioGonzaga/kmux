@@ -11,6 +11,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Core domain model for SSH identities, fingerprints, agents, scopes, and key catalogs.
 - Deterministic exact-or-descendant scope matching with validation and unit tests.
 - Read-only configuration loading for YAML, JSON, and TOML with static validation.
+- Unix-socket upstream SSH agent identity discovery with bounded protocol framing.
 
 ### Changed
 

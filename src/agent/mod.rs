@@ -1,6 +1,10 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
+mod unix;
+
+pub use unix::{AgentError, UnixSocketAgent, UpstreamAgent};
+
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct AgentName(String);
 

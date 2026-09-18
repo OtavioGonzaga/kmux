@@ -1,5 +1,7 @@
 use crate::agent::AgentName;
 use crate::scope::ScopePath;
+use base64::Engine;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
@@ -8,6 +10,14 @@ use std::str::FromStr;
 pub struct Fingerprint(String);
 
 impl Fingerprint {
+    pub fn from_public_key_blob(key_blob: &[u8]) -> Self {
+        let digest = Sha256::digest(key_blob);
+        Self(format!(
+            "SHA256:{}",
+            base64::engine::general_purpose::STANDARD_NO_PAD.encode(digest)
+        ))
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
