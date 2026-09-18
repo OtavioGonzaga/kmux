@@ -13,6 +13,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Read-only configuration loading for YAML, JSON, and TOML with static validation.
 - Unix-socket upstream SSH agent identity discovery with bounded protocol framing.
 - Filtered proxy policy that blocks unselected signatures and mutable or unknown operations.
+- Runtime upstream diagnostics through `kmux doctor`.
 
 ### Changed
 
