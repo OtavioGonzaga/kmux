@@ -233,8 +233,8 @@ mod tests {
 
     #[test]
     fn aliases_are_normalized() {
-        let alias = KeyAlias::new("Hogix-Debian-2").unwrap();
+        let alias = KeyAlias::new("Company-Debian-2").unwrap();
 
-        assert_eq!(alias.as_str(), "hogix-debian-2");
+        assert_eq!(alias.as_str(), "company-debian-2");
     }
 }

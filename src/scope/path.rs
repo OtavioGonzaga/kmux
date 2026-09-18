@@ -108,19 +108,19 @@ mod tests {
 
     #[test]
     fn paths_are_normalized_to_lowercase() {
-        let path = ScopePath::from_str("Hogix/Postgres-Walg/Production").unwrap();
+        let path = ScopePath::from_str("Company/Postgres-Walg/Production").unwrap();
 
-        assert_eq!(path.to_string(), "hogix/postgres-walg/production");
+        assert_eq!(path.to_string(), "company/postgres-walg/production");
     }
 
     #[test]
     fn paths_reject_empty_or_invalid_segments() {
         for value in [
             "",
-            "/hogix",
-            "hogix/",
-            "hogix//production",
-            "hogix/post gres",
+            "/company",
+            "company/",
+            "company//production",
+            "company/post gres",
         ] {
             assert!(
                 ScopePath::from_str(value).is_err(),
@@ -131,8 +131,8 @@ mod tests {
 
     #[test]
     fn ancestor_matching_includes_the_same_path() {
-        let parent = ScopePath::from_str("hogix").unwrap();
-        let child = ScopePath::from_str("hogix/postgres").unwrap();
+        let parent = ScopePath::from_str("company").unwrap();
+        let child = ScopePath::from_str("company/postgres").unwrap();
 
         assert!(parent.is_prefix_of(&parent));
         assert!(parent.is_prefix_of(&child));

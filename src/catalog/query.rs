@@ -116,11 +116,11 @@ mod tests {
     #[test]
     fn a_scope_query_matches_only_the_scope_and_its_descendants() {
         let catalog = KeyCatalog::from_entries([
-            entry("hogix-root", FINGERPRINT_A, &["hogix"]),
-            entry("postgres", FINGERPRINT_B, &["hogix/postgres/production"]),
+            entry("company-root", FINGERPRINT_A, &["company"]),
+            entry("postgres", FINGERPRINT_B, &["company/postgres/production"]),
         ])
         .unwrap();
-        let query = ScopeQuery::new(ScopePath::from_str("hogix/postgres").unwrap());
+        let query = ScopeQuery::new(ScopePath::from_str("company/postgres").unwrap());
 
         let aliases = catalog
             .query(&query)
@@ -134,11 +134,11 @@ mod tests {
     #[test]
     fn a_parent_scope_query_includes_descendants_in_alias_order() {
         let catalog = KeyCatalog::from_entries([
-            entry("zebra", FINGERPRINT_A, &["hogix/postgres"]),
-            entry("alpha", FINGERPRINT_B, &["hogix/api"]),
+            entry("zebra", FINGERPRINT_A, &["company/postgres"]),
+            entry("alpha", FINGERPRINT_B, &["company/api"]),
         ])
         .unwrap();
-        let query = ScopeQuery::new(ScopePath::from_str("hogix").unwrap());
+        let query = ScopeQuery::new(ScopePath::from_str("company").unwrap());
 
         let aliases = catalog
             .query(&query)
@@ -152,11 +152,11 @@ mod tests {
     #[test]
     fn catalog_rejects_duplicate_aliases_and_fingerprints() {
         let duplicate_alias = KeyCatalog::from_entries([
-            entry("same", FINGERPRINT_A, &["hogix"]),
+            entry("same", FINGERPRINT_A, &["company"]),
             entry("same", FINGERPRINT_B, &["personal"]),
         ]);
         let duplicate_fingerprint = KeyCatalog::from_entries([
-            entry("first", FINGERPRINT_A, &["hogix"]),
+            entry("first", FINGERPRINT_A, &["company"]),
             entry("second", FINGERPRINT_A, &["personal"]),
         ]);
 
@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn catalog_returns_no_match_for_unrelated_scope() {
         let catalog =
-            KeyCatalog::from_entries([entry("hogix", FINGERPRINT_A, &["hogix"])]).unwrap();
+            KeyCatalog::from_entries([entry("company", FINGERPRINT_A, &["company"])]).unwrap();
         let query = ScopeQuery::new(ScopePath::from_str("personal").unwrap());
 
         assert!(catalog.query(&query).is_empty());

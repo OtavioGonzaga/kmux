@@ -232,13 +232,13 @@ mod tests {
     fn config(format: &str) -> String {
         match format {
             "yaml" => format!(
-                "version: 1\nagents:\n  bitwarden:\n    type: unix\n    socket: /run/user/1000/agent.sock\nkeys:\n  deploy:\n    fingerprint: {FINGERPRINT}\n    agent: bitwarden\n    scopes: [hogix/production]\n"
+                "version: 1\nagents:\n  bitwarden:\n    type: unix\n    socket: /run/user/1000/agent.sock\nkeys:\n  deploy:\n    fingerprint: {FINGERPRINT}\n    agent: bitwarden\n    scopes: [company/production]\n"
             ),
             "json" => format!(
-                r#"{{"version":1,"agents":{{"bitwarden":{{"type":"unix","socket":"/run/user/1000/agent.sock"}}}},"keys":{{"deploy":{{"fingerprint":"{FINGERPRINT}","agent":"bitwarden","scopes":["hogix/production"]}}}}}}"#
+                r#"{{"version":1,"agents":{{"bitwarden":{{"type":"unix","socket":"/run/user/1000/agent.sock"}}}},"keys":{{"deploy":{{"fingerprint":"{FINGERPRINT}","agent":"bitwarden","scopes":["company/production"]}}}}}}"#
             ),
             "toml" => format!(
-                "version = 1\n[agents.bitwarden]\ntype = \"unix\"\nsocket = \"/run/user/1000/agent.sock\"\n[keys.deploy]\nfingerprint = \"{FINGERPRINT}\"\nagent = \"bitwarden\"\nscopes = [\"hogix/production\"]\n"
+                "version = 1\n[agents.bitwarden]\ntype = \"unix\"\nsocket = \"/run/user/1000/agent.sock\"\n[keys.deploy]\nfingerprint = \"{FINGERPRINT}\"\nagent = \"bitwarden\"\nscopes = [\"company/production\"]\n"
             ),
             _ => unreachable!(),
         }
@@ -265,7 +265,7 @@ mod tests {
             assert_eq!(
                 loaded
                     .catalog()
-                    .query(&crate::catalog::ScopeQuery::new("hogix".parse().unwrap()))
+                    .query(&crate::catalog::ScopeQuery::new("company".parse().unwrap()))
                     .len(),
                 1
             );
@@ -278,7 +278,7 @@ mod tests {
         let unknown_agent = write_config(
             "yaml",
             &format!(
-                "version: 1\nkeys:\n  deploy:\n    fingerprint: {FINGERPRINT}\n    agent: missing\n    scopes: [hogix]\n"
+                "version: 1\nkeys:\n  deploy:\n    fingerprint: {FINGERPRINT}\n    agent: missing\n    scopes: [company]\n"
             ),
         );
 
