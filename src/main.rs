@@ -1,8 +1,13 @@
 use clap::{Parser, Subcommand};
 use kmux::agent::{UnixSocketAgent, UpstreamAgent};
 use kmux::config::Config;
+use kmux::proxy::{FilteredAgent, ProxyServer};
+use kmux::selection::{choose, resolve};
 use std::collections::BTreeSet;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::process::Command as ProcessCommand;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Parser)]
 struct Cli {
@@ -16,6 +21,11 @@ enum Command {
     Keys,
     Scopes,
     Doctor,
+    Exec {
+        scope: String,
+        #[arg(required = true, trailing_var_arg = true)]
+        command: Vec<String>,
+    },
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
@@ -29,24 +39,60 @@ enum ConfigCommand {
 fn main() {
     let cli = Cli::parse();
     let result = run(cli);
-    if let Err(error) = result {
-        eprintln!("kmux: {error}");
-        std::process::exit(1);
+    match result {
+        Ok(code) => std::process::exit(code),
+        Err(error) => {
+            eprintln!("kmux: {error}");
+            std::process::exit(1);
+        }
     }
 }
 
-fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
+fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
     let path = Config::discover(cli.config.as_deref())?;
     let config = Config::load(path.as_path())?;
     match cli.command {
         Command::Keys => print_keys(&config),
         Command::Scopes => print_scopes(&config),
         Command::Doctor => doctor(&config)?,
+        Command::Exec { scope, command } => return execute(&config, scope.parse()?, command),
         Command::Config {
             command: ConfigCommand::Check,
         } => println!("configuration is valid"),
     }
-    Ok(())
+    Ok(0)
+}
+
+fn execute(
+    config: &Config,
+    scope: kmux::scope::ScopePath,
+    command: Vec<String>,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    let candidate = choose(resolve(config, scope)?)?;
+    let definition = config
+        .agents()
+        .get(candidate.entry.agent())
+        .ok_or("selected agent is missing")?;
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("kmux");
+    std::fs::create_dir_all(&runtime)?;
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))?;
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let socket = runtime.join(format!("{}-{unique}.sock", std::process::id()));
+    let server = ProxyServer::bind(
+        &socket,
+        FilteredAgent::new(
+            UnixSocketAgent::new(definition.socket().to_owned()),
+            [candidate.identity.key_blob],
+        ),
+    )?;
+    let status = ProcessCommand::new(&command[0])
+        .args(&command[1..])
+        .env("SSH_AUTH_SOCK", server.path())
+        .status()?;
+    Ok(status.code().unwrap_or(1))
 }
 
 fn print_keys(config: &Config) {
