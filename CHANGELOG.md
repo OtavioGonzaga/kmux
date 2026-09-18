@@ -16,6 +16,8 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Runtime upstream diagnostics through `kmux doctor`.
 - Candidate resolution with interactive selection and non-interactive ambiguity errors.
 - Public identity import snippets through `kmux import agent`.
+- Structured JSON logging controlled by `KMUX_LOG` or `RUST_LOG`.
+- Signal-aware `exec` cleanup and proxy, CLI, and OpenSSH integration coverage.
 
 ### Changed
 

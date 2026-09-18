@@ -5,9 +5,16 @@ use kmux::proxy::{FilteredAgent, ProxyServer};
 use kmux::selection::{choose, resolve};
 use std::collections::BTreeSet;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
+use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
 struct Cli {
@@ -55,6 +62,7 @@ enum ConfigCommand {
 }
 
 fn main() {
+    init_logging();
     let cli = Cli::parse();
     let result = run(cli);
     match result {
@@ -64,6 +72,17 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn init_logging() {
+    let filter = EnvFilter::try_from_env("KMUX_LOG")
+        .or_else(|_| EnvFilter::try_from_default_env())
+        .unwrap_or_else(|_| EnvFilter::new("warn"));
+    tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .init();
 }
 
 fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
@@ -130,6 +149,7 @@ fn execute(
     scope: kmux::scope::ScopePath,
     command: Vec<String>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
+    tracing::info!(scope = %scope, command = %command[0], "starting filtered command");
     let candidate = choose(resolve(config, scope)?)?;
     let definition = config
         .agents()
@@ -150,11 +170,44 @@ fn execute(
             [candidate.identity.key_blob],
         ),
     )?;
-    let status = ProcessCommand::new(&command[0])
+    tracing::debug!(socket = %server.path().display(), agent = %candidate.entry.agent(), "started filtered agent proxy");
+    let received_signal = Arc::new(AtomicUsize::new(0));
+    signal_hook::flag::register_usize(
+        signal_hook::consts::SIGINT,
+        received_signal.clone(),
+        signal_hook::consts::SIGINT as usize,
+    )?;
+    signal_hook::flag::register_usize(
+        signal_hook::consts::SIGTERM,
+        received_signal.clone(),
+        signal_hook::consts::SIGTERM as usize,
+    )?;
+    let mut child = ProcessCommand::new(&command[0])
         .args(&command[1..])
         .env("SSH_AUTH_SOCK", server.path())
-        .status()?;
-    Ok(status.code().unwrap_or(1))
+        .spawn()?;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        let signal = received_signal.swap(0, Ordering::Relaxed);
+        if signal != 0 {
+            tracing::info!(
+                signal,
+                child_pid = child.id(),
+                "forwarding termination signal to child"
+            );
+            // The child receives the same terminal signal before the proxy is dropped.
+            unsafe { libc::kill(child.id() as i32, signal as i32) };
+        }
+        thread::sleep(std::time::Duration::from_millis(10));
+    };
+    let code = status
+        .code()
+        .or_else(|| status.signal().map(|signal| 128 + signal))
+        .unwrap_or(1);
+    tracing::info!(exit_code = code, "filtered command exited");
+    Ok(code)
 }
 
 fn print_keys(config: &Config) {
