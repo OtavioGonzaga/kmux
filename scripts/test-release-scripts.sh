@@ -35,6 +35,13 @@ grep -Fq 'version = "0.2.0"' "$root/Cargo.toml"
 grep -Fq '## [0.2.0] - 2026-09-19' "$root/CHANGELOG.md"
 test "$(bash scripts/extract-release-notes.sh 0.2.0 "$root/CHANGELOG.md")" = $'\n### Added\n\n- Change'
 
+test "$(bash scripts/debian-version.sh 0.1.0)" = "0.1.0-1"
+test "$(bash scripts/debian-version.sh 0.2.0-beta.1)" = "0.2.0~beta.1-1"
+test "$(bash scripts/debian-version.sh 1.0.0-rc.2)" = "1.0.0~rc.2-1"
+dpkg --compare-versions '0.2.0~beta.1-1' lt '0.2.0-1'
+dpkg --compare-versions '0.2.0~beta.1-1' lt '0.2.0~beta.2-1'
+dpkg --compare-versions '0.2.0~beta.2-1' lt '0.2.0~rc.1-1'
+
 if bash scripts/prepare-release.sh --root "$root" 0.1.0; then exit 1; fi
 if bash scripts/prepare-release.sh --root "$root" v0.3.0; then exit 1; fi
 if bash scripts/prepare-release.sh --root "$root" 1.0.0-alpha.01; then exit 1; fi
