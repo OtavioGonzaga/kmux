@@ -30,3 +30,5 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Include derived parent scopes in `kmux scopes` and improve import alias suggestions from public comments.
 - Track active proxy connections so shutdown closes downstream and upstream workers before socket removal.
 - Harden proxy shutdown for stalled upstream responses, use private runtime-directory fallbacks, and forward child signals through safe Rust APIs.
+- Use bounded `serde-saphyr` parsing, per-execution runtime directories, and structurally validate `session-bind@openssh.com` requests before forwarding.
+- Sanitize untrusted SSH-agent comments in terminal selection output and validate generated import snippets in every supported format.

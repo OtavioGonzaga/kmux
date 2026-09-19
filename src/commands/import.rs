@@ -21,47 +21,60 @@ pub fn import_agent(
             .entries()
             .map(|entry| entry.alias().clone()),
     );
+    print!(
+        "{}",
+        render_import(&aliases, &identities, &name, &scope, format)?
+    );
+    Ok(())
+}
+
+fn render_import(
+    aliases: &[KeyAlias],
+    identities: &[Identity],
+    name: &AgentName,
+    scope: &ScopePath,
+    format: OutputFormat,
+) -> Result<String, serde_json::Error> {
+    let mut output = String::new();
     match format {
         OutputFormat::Yaml => {
-            println!("keys:");
-            for (alias, identity) in aliases.iter().zip(&identities) {
+            output.push_str("keys:\n");
+            for (alias, identity) in aliases.iter().zip(identities) {
                 if let Some(comment) = identity
                     .comment
                     .as_deref()
                     .filter(|comment| comment.chars().all(|character| !character.is_control()))
                 {
-                    println!("  # {comment}");
+                    output.push_str(&format!("  # {comment}\n"));
                 }
-                println!(
-                    "  {alias}:\n    fingerprint: \"{}\"\n    agent: {}\n    scopes: [\"{}\"]",
+                output.push_str(&format!(
+                    "  {alias}:\n    fingerprint: \"{}\"\n    agent: {}\n    scopes: [\"{}\"]\n",
                     identity.fingerprint, name, scope
-                );
+                ));
             }
         }
         OutputFormat::Json => {
-            let keys = aliases.iter().zip(&identities).map(|(alias, identity)| (alias.to_string(), serde_json::json!({"fingerprint": identity.fingerprint.as_str(), "agent": name.as_str(), "scopes": [scope.to_string()]}))).collect::<serde_json::Map<_, _>>();
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({"keys": keys}))?
-            );
+            let keys = aliases.iter().zip(identities).map(|(alias, identity)| (alias.to_string(), serde_json::json!({"fingerprint": identity.fingerprint.as_str(), "agent": name.as_str(), "scopes": [scope.to_string()]}))).collect::<serde_json::Map<_, _>>();
+            output = serde_json::to_string_pretty(&serde_json::json!({"keys": keys}))?;
+            output.push('\n');
         }
         OutputFormat::Toml => {
-            for (alias, identity) in aliases.iter().zip(&identities) {
+            for (alias, identity) in aliases.iter().zip(identities) {
                 if let Some(comment) = identity
                     .comment
                     .as_deref()
                     .filter(|comment| comment.chars().all(|character| !character.is_control()))
                 {
-                    println!("# {comment}");
+                    output.push_str(&format!("# {comment}\n"));
                 }
-                println!(
-                    "[keys.{alias}]\nfingerprint = \"{}\"\nagent = \"{}\"\nscopes = [\"{}\"]",
+                output.push_str(&format!(
+                    "[keys.{alias}]\nfingerprint = \"{}\"\nagent = \"{}\"\nscopes = [\"{}\"]\n",
                     identity.fingerprint, name, scope
-                );
+                ));
             }
         }
     }
-    Ok(())
+    Ok(output)
 }
 
 fn suggested_aliases(
@@ -113,7 +126,9 @@ fn comment_alias(comment: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{comment_alias, suggested_aliases};
+    use super::{comment_alias, render_import, suggested_aliases};
+    use crate::cli::OutputFormat;
+    use kmux::agent::AgentName;
     use kmux::catalog::{Fingerprint, Identity, KeyAlias};
     use std::str::FromStr;
 
@@ -178,5 +193,20 @@ mod tests {
                 "chave-deploy"
             ]
         );
+    }
+
+    #[test]
+    fn rendered_snippets_are_valid_in_each_format() {
+        let identities = [identity(Some("public key"))];
+        let aliases = suggested_aliases(&identities, [] as [KeyAlias; 0]);
+        let name = AgentName::new("agent").unwrap();
+        let scope = "production".parse().unwrap();
+
+        let yaml = render_import(&aliases, &identities, &name, &scope, OutputFormat::Yaml).unwrap();
+        let _: serde_json::Value = serde_saphyr::from_str(&yaml).unwrap();
+        let json = render_import(&aliases, &identities, &name, &scope, OutputFormat::Json).unwrap();
+        let _: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let toml = render_import(&aliases, &identities, &name, &scope, OutputFormat::Toml).unwrap();
+        let _: toml::Value = toml::from_str(&toml).unwrap();
     }
 }

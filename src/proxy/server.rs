@@ -114,7 +114,10 @@ impl ProxyServer {
         if let Some(listener) = self.listener.take() {
             let _ = listener.join();
         }
-        for session in lock(&self.connections.active).values() {
+        // Remove sessions before closing them so a concurrent upstream callback either
+        // registers before this point or closes its newly connected upstream itself.
+        let sessions = std::mem::take(&mut *lock(&self.connections.active));
+        for session in sessions.values() {
             let _ = session.downstream.shutdown(Shutdown::Both);
             if let Some(upstream) = &session.upstream {
                 let _ = upstream.shutdown(Shutdown::Both);

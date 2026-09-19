@@ -32,6 +32,10 @@ impl<'a> Reader<'a> {
             .map(|value| u32::from_be_bytes(value.try_into().unwrap()))
     }
 
+    pub fn boolean(&mut self) -> Result<bool, ProxyError> {
+        self.byte().map(|value| value != 0)
+    }
+
     pub fn string(&mut self) -> Result<&'a [u8], ProxyError> {
         let length = self.u32()? as usize;
         self.take(length)

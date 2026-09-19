@@ -45,49 +45,28 @@ pub fn execute(
         .unwrap_or(1))
 }
 
-enum RuntimeDirectory {
-    Xdg(PathBuf),
-    Temporary(tempfile::TempDir),
-}
+struct RuntimeDirectory(tempfile::TempDir);
 
 impl RuntimeDirectory {
     fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        match std::env::var_os("XDG_RUNTIME_DIR") {
-            Some(base) => {
-                let path = PathBuf::from(base).join("kmux");
-                match std::fs::symlink_metadata(&path) {
-                    Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-                        return Err(format!(
-                            "runtime path '{}' is not a directory",
-                            path.display()
-                        )
-                        .into());
-                    }
-                    Ok(_) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                        std::fs::create_dir(&path)?
-                    }
-                    Err(error) => return Err(error.into()),
-                }
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))?;
-                Ok(Self::Xdg(path))
-            }
-            None => Ok(Self::temporary()?),
-        }
+        let directory = match std::env::var_os("XDG_RUNTIME_DIR") {
+            Some(base) => Self::new_in(base)?,
+            None => Self::from_tempdir(tempfile::Builder::new().prefix("kmux-").tempdir()?)?,
+        };
+        Ok(directory)
     }
 
     fn socket_path(&self) -> PathBuf {
-        let directory = match self {
-            Self::Xdg(path) => path,
-            Self::Temporary(path) => path.path(),
-        };
-        directory.join(format!("{}.sock", std::process::id()))
+        self.0.path().join("agent.sock")
     }
 
-    fn temporary() -> Result<Self, std::io::Error> {
-        let directory = tempfile::Builder::new().prefix("kmux-").tempdir()?;
+    fn new_in(base: impl AsRef<std::path::Path>) -> Result<Self, std::io::Error> {
+        Self::from_tempdir(tempfile::Builder::new().prefix("kmux-").tempdir_in(base)?)
+    }
+
+    fn from_tempdir(directory: tempfile::TempDir) -> Result<Self, std::io::Error> {
         std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))?;
-        Ok(Self::Temporary(directory))
+        Ok(Self(directory))
     }
 }
 
@@ -162,11 +141,14 @@ fn forward_signal(
 mod tests {
     use super::RuntimeDirectory;
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, Barrier, mpsc};
+    use std::thread;
 
     #[test]
-    fn temporary_runtime_directory_is_private_and_unique() {
-        let first = RuntimeDirectory::temporary().unwrap();
-        let second = RuntimeDirectory::temporary().unwrap();
+    fn runtime_directories_are_private_unique_and_cleaned_up() {
+        let base = tempfile::tempdir().unwrap();
+        let first = RuntimeDirectory::new_in(base.path()).unwrap();
+        let second = RuntimeDirectory::new_in(base.path()).unwrap();
         let first_path = first.socket_path();
         let second_path = second.socket_path();
         assert_ne!(first_path.parent(), second_path.parent());
@@ -178,5 +160,44 @@ mod tests {
                 & 0o077,
             0
         );
+        drop(first);
+        drop(second);
+        assert!(!first_path.parent().unwrap().exists());
+        assert!(!second_path.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn concurrent_runtime_directories_do_not_collide() {
+        let base = tempfile::tempdir().unwrap();
+        let barrier = Arc::new(Barrier::new(3));
+        let (paths_sent, paths_received) = mpsc::channel();
+        thread::scope(|scope| {
+            let base = base.path();
+            for _ in 0..2 {
+                let barrier = barrier.clone();
+                let paths_sent = paths_sent.clone();
+                scope.spawn(move || {
+                    barrier.wait();
+                    let runtime = RuntimeDirectory::new_in(base).unwrap();
+                    let path = runtime.socket_path();
+                    let mode = std::fs::metadata(path.parent().unwrap())
+                        .unwrap()
+                        .permissions()
+                        .mode()
+                        & 0o077;
+                    paths_sent.send((path, mode)).unwrap();
+                    barrier.wait();
+                });
+            }
+            barrier.wait();
+            let first = paths_received.recv().unwrap();
+            let second = paths_received.recv().unwrap();
+            assert_ne!(first.0.parent(), second.0.parent());
+            assert_eq!(first.1, 0);
+            assert_eq!(second.1, 0);
+            assert!(first.0.parent().unwrap().exists());
+            assert!(second.0.parent().unwrap().exists());
+            barrier.wait();
+        });
     }
 }

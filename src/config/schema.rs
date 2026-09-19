@@ -12,6 +12,15 @@ use std::str::FromStr;
 
 const CONFIG_ENV: &str = "KMUX_CONFIG";
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+const MAX_YAML_DOCUMENTS: usize = 1;
+const MAX_YAML_DEPTH: usize = 128;
+const MAX_YAML_EVENTS: usize = 100_000;
+const MAX_YAML_NODES: usize = 50_000;
+const MAX_YAML_ANCHORS: usize = 1_024;
+const MAX_YAML_ALIASES: usize = 4_096;
+const MAX_YAML_ALIAS_REPLAY_EVENTS: usize = 100_000;
+const MAX_YAML_ALIAS_REPLAY_DEPTH: usize = 64;
+const MAX_YAML_ALIAS_EXPANSIONS_PER_ANCHOR: usize = 256;
 const SUPPORTED_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -232,7 +241,36 @@ struct TomlConfigDecoder;
 
 impl ConfigDecoder for YamlConfigDecoder {
     fn decode(&self, source: &str) -> Result<ConfigSchema, ConfigError> {
-        serde_saphyr::from_str(source).map_err(|error| ConfigError::Parse(error.to_string()))
+        let options = serde_saphyr::options! {
+            budget: serde_saphyr::budget! {
+                max_documents: MAX_YAML_DOCUMENTS,
+                max_depth: MAX_YAML_DEPTH,
+                max_events: MAX_YAML_EVENTS,
+                max_nodes: MAX_YAML_NODES,
+                max_anchors: MAX_YAML_ANCHORS,
+                max_aliases: MAX_YAML_ALIASES,
+                max_recorded_anchor_events: MAX_YAML_ALIAS_REPLAY_EVENTS,
+                max_recorded_anchor_bytes: MAX_CONFIG_BYTES,
+                max_total_scalar_bytes: MAX_CONFIG_BYTES,
+            },
+            emit_comments: false,
+            duplicate_keys: serde_saphyr::DuplicateKeyPolicy::Error,
+            merge_keys: serde_saphyr::MergeKeyPolicy::Error,
+            alias_limits: serde_saphyr::alias_limits! {
+                max_total_replayed_events: MAX_YAML_ALIAS_REPLAY_EVENTS,
+                max_replay_stack_depth: MAX_YAML_ALIAS_REPLAY_DEPTH,
+                max_alias_expansions_per_anchor: MAX_YAML_ALIAS_EXPANSIONS_PER_ANCHOR,
+            },
+        };
+        let mut documents: Vec<ConfigSchema> =
+            serde_saphyr::from_multiple_with_options(source, options)
+                .map_err(|error| ConfigError::Parse(error.to_string()))?;
+        match documents.len() {
+            1 => Ok(documents.remove(0)),
+            _ => Err(ConfigError::Parse(
+                "configuration must contain exactly one YAML document".to_owned(),
+            )),
+        }
     }
 }
 
@@ -310,7 +348,7 @@ struct KeySchema {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, ConfigError, MAX_CONFIG_BYTES};
+    use super::{Config, ConfigError, MAX_CONFIG_BYTES, MAX_YAML_ALIASES};
     use crate::agent::{AgentDefinition, AgentName};
     use crate::catalog::{Fingerprint, KeyAlias, KeyCatalog, KeyEntry};
     use crate::scope::ScopePath;
@@ -434,6 +472,19 @@ mod tests {
         );
 
         assert!(Config::load(&path).is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rejects_yaml_that_exceeds_alias_budget() {
+        let mut source = String::from("version: 1\nanchor: &anchor value\n");
+        for index in 0..=MAX_YAML_ALIASES {
+            source.push_str(&format!("alias-{index}: *anchor\n"));
+        }
+        let path = write_config("yaml", &source);
+
+        let error = Config::load(&path).unwrap_err();
+        assert!(matches!(error, ConfigError::Parse(ref message) if message.contains("alias")));
         fs::remove_file(path).unwrap();
     }
 

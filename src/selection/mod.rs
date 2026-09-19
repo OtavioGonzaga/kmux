@@ -21,9 +21,30 @@ impl fmt::Display for Candidate {
             "{} - {} - {}",
             self.entry.alias(),
             self.matched_scope,
-            self.identity.comment.as_deref().unwrap_or("no comment")
+            self.identity
+                .comment
+                .as_deref()
+                .map(sanitize_comment)
+                .unwrap_or_else(|| "no comment".to_owned())
         )
     }
+}
+
+const MAX_DISPLAY_COMMENT_CHARS: usize = 200;
+
+fn sanitize_comment(comment: &str) -> String {
+    let mut sanitized = String::with_capacity(comment.len().min(MAX_DISPLAY_COMMENT_CHARS));
+    for character in comment.chars().take(MAX_DISPLAY_COMMENT_CHARS) {
+        sanitized.push(if character.is_control() {
+            ' '
+        } else {
+            character
+        });
+    }
+    if comment.chars().nth(MAX_DISPLAY_COMMENT_CHARS).is_some() {
+        sanitized.push_str("...");
+    }
+    sanitized
 }
 
 pub fn resolve(config: &Config, scope: ScopePath) -> Result<Vec<Candidate>, SelectionError> {
@@ -143,7 +164,9 @@ impl std::error::Error for SelectionError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{Candidate, CandidateChooser, SelectionError, choose_with_mode, resolve};
+    use super::{
+        Candidate, CandidateChooser, SelectionError, choose_with_mode, resolve, sanitize_comment,
+    };
     use crate::agent::{AgentDefinition, AgentName, read_frame, write_frame};
     use crate::catalog::{Fingerprint, Identity, KeyAlias, KeyCatalog, KeyEntry};
     use crate::config::Config;
@@ -250,6 +273,21 @@ mod tests {
             "hogix/production"
         );
         assert_eq!(chooser.0.get(), 1);
+    }
+
+    #[test]
+    fn comments_are_sanitized_for_terminal_display() {
+        assert_eq!(sanitize_comment("production key"), "production key");
+        assert_eq!(sanitize_comment("chave de produção"), "chave de produção");
+        assert_eq!(
+            sanitize_comment("one\ntwo\rthree\tfour"),
+            "one two three four"
+        );
+        assert_eq!(sanitize_comment("\x1b[2J\0key"), " [2J key");
+        assert_eq!(
+            sanitize_comment(&"a".repeat(201)),
+            format!("{}...", "a".repeat(200))
+        );
     }
 
     fn candidate(matched_scope: &str, other_scope: &str) -> Candidate {

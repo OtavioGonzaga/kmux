@@ -50,9 +50,7 @@ impl FilteredAgent {
                     self.forward(&mut upstream, &request)?
                 }
                 Some(SIGN_REQUEST) => vec![FAILURE],
-                Some(EXTENSION)
-                    if extension_name(&request) == Some(b"session-bind@openssh.com".as_slice()) =>
-                {
+                Some(EXTENSION) if valid_session_bind(&request) => {
                     self.forward(&mut upstream, &request)?
                 }
                 Some(EXTENSION) => vec![EXTENSION_FAILURE],
@@ -114,9 +112,13 @@ impl FilteredAgent {
     }
 }
 
-fn extension_name(request: &[u8]) -> Option<&[u8]> {
+fn valid_session_bind(request: &[u8]) -> bool {
     let mut reader = Reader::new(request);
-    (reader.byte().ok()? == EXTENSION)
-        .then(|| reader.string().ok())
-        .flatten()
+    matches!(reader.byte(), Ok(EXTENSION))
+        && matches!(reader.string(), Ok(b"session-bind@openssh.com"))
+        && reader.string().is_ok()
+        && reader.string().is_ok()
+        && reader.string().is_ok()
+        && reader.boolean().is_ok()
+        && reader.empty()
 }

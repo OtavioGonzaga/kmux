@@ -54,6 +54,7 @@ mod tests {
         path: PathBuf,
         running: Arc<AtomicBool>,
         connections: Arc<AtomicUsize>,
+        requests: Arc<AtomicUsize>,
         worker: Option<thread::JoinHandle<()>>,
         connection_workers: Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
     }
@@ -67,6 +68,8 @@ mod tests {
             let worker_running = running.clone();
             let connections = Arc::new(AtomicUsize::new(0));
             let worker_connections = connections.clone();
+            let requests = Arc::new(AtomicUsize::new(0));
+            let worker_requests = requests.clone();
             let connection_workers = Arc::new(Mutex::new(Vec::new()));
             let listener_workers = connection_workers.clone();
             let worker = thread::spawn(move || {
@@ -76,8 +79,9 @@ mod tests {
                             let identities = identities.clone();
                             let id = worker_connections.fetch_add(1, Ordering::Relaxed) + 1;
                             let workers = listener_workers.clone();
+                            let requests = worker_requests.clone();
                             workers.lock().unwrap().push(thread::spawn(move || {
-                                serve_fake_connection(stream, identities, id)
+                                serve_fake_connection(stream, identities, id, requests)
                             }));
                         }
                         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -91,6 +95,7 @@ mod tests {
                 path,
                 running,
                 connections,
+                requests,
                 worker: Some(worker),
                 connection_workers,
             }
@@ -111,8 +116,14 @@ mod tests {
         }
     }
 
-    fn serve_fake_connection(mut stream: UnixStream, identities: Vec<Vec<u8>>, id: usize) {
+    fn serve_fake_connection(
+        mut stream: UnixStream,
+        identities: Vec<Vec<u8>>,
+        id: usize,
+        requests: Arc<AtomicUsize>,
+    ) {
         while let Ok(request) = read_frame(&mut stream) {
+            requests.fetch_add(1, Ordering::Relaxed);
             let response = match request.first() {
                 Some(11) => {
                     let mut response = vec![12];
@@ -154,6 +165,16 @@ mod tests {
         request
     }
 
+    fn session_bind() -> Vec<u8> {
+        let mut request = vec![EXTENSION];
+        put_string(&mut request, b"session-bind@openssh.com");
+        put_string(&mut request, b"hostkey");
+        put_string(&mut request, b"session-id");
+        put_string(&mut request, b"signature");
+        request.push(0);
+        request
+    }
+
     #[test]
     fn proxy_filters_operations_and_isolates_upstream_connections() {
         let allowed = b"allowed".to_vec();
@@ -176,12 +197,47 @@ mod tests {
         put_string(&mut extension, b"unknown@kmux");
         assert_eq!(request(&mut first, &extension), [EXTENSION_FAILURE]);
         assert_eq!(request(&mut first, &[EXTENSION]), [EXTENSION_FAILURE]);
-        let mut session_bind = vec![EXTENSION];
-        put_string(&mut session_bind, b"session-bind@openssh.com");
-        assert_eq!(request(&mut first, &session_bind), [6, 1]);
+        assert_eq!(request(&mut first, &session_bind()), [6, 1]);
         let mut second = UnixStream::connect(server.path()).unwrap();
         assert_eq!(request(&mut second, &sign_request(&allowed)), [14, 2]);
         assert_eq!(upstream.connections.load(Ordering::Acquire), 2);
+    }
+
+    #[test]
+    fn malformed_session_bind_requests_are_not_forwarded() {
+        let allowed = b"allowed".to_vec();
+        let upstream = FakeAgent::start(vec![allowed.clone()]);
+        let path = socket_path("session-bind");
+        let server = ProxyServer::bind(
+            &path,
+            FilteredAgent::new(UnixSocketAgent::new(&upstream.path), [allowed]),
+        )
+        .unwrap();
+        let mut downstream = UnixStream::connect(server.path()).unwrap();
+        assert_eq!(request(&mut downstream, &session_bind()), [6, 1]);
+        assert_eq!(upstream.requests.load(Ordering::Acquire), 1);
+
+        let mut name_only = vec![EXTENSION];
+        put_string(&mut name_only, b"session-bind@openssh.com");
+        let mut without_session_id = name_only.clone();
+        put_string(&mut without_session_id, b"hostkey");
+        let mut without_signature = without_session_id.clone();
+        put_string(&mut without_signature, b"session-id");
+        let mut without_boolean = without_signature.clone();
+        put_string(&mut without_boolean, b"signature");
+        let mut trailing = session_bind();
+        trailing.push(0);
+
+        for malformed in [
+            name_only,
+            without_session_id,
+            without_signature,
+            without_boolean,
+            trailing,
+        ] {
+            assert_eq!(request(&mut downstream, &malformed), [EXTENSION_FAILURE]);
+        }
+        assert_eq!(upstream.requests.load(Ordering::Acquire), 1);
     }
 
     #[test]

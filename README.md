@@ -36,7 +36,7 @@ kmux --config config.yaml exec company/production -- ssh deploy@example.com
 
 `scopes` lists configured scopes and their derived ancestors, in sorted order. `import agent` emits a configuration snippet only; it derives readable, deterministic aliases from public agent comments and never changes the configuration file.
 
-`exec` creates a temporary Unix socket, passes it to the child only through `SSH_AUTH_SOCK`, and removes it after the child exits. A parent scope matches keys declared in that scope and descendant scopes; a child scope does not implicitly select ancestor keys. When more than one key matches, `kmux` selects through the controlling terminal when one is available (including when command output is piped); otherwise it reports the candidate list. The child exit code is preserved.
+`exec` creates a private, per-execution temporary directory for its Unix socket, passes it to the child only through `SSH_AUTH_SOCK`, and removes it after the child exits. A parent scope matches keys declared in that scope and descendant scopes; a child scope does not implicitly select ancestor keys. When more than one key matches, `kmux` selects through the controlling terminal when one is available (including when command output is piped); otherwise it reports the candidate list. The child exit code is preserved.
 
 ## Security
 
