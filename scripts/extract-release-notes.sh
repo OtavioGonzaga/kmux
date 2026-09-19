@@ -8,7 +8,7 @@ if ! grep -Fq "## [$version]" "$changelog"; then
   exit 1
 fi
 awk -v heading="## [$version]" '
-  $0 ~ "^" heading { active = 1; next }
+  index($0, heading) == 1 { active = 1; next }
   active && /^## \[/ { exit }
   active { print }
 ' "$changelog"

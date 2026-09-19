@@ -30,10 +30,24 @@ git -C "$root" config user.name Test
 git -C "$root" add .
 git -C "$root" commit --quiet -m initial
 
+bash scripts/prepare-release.sh --root "$root" --date 2026-09-19 0.2.0
 grep -Fq 'version = "0.2.0"' "$root/Cargo.toml"
 grep -Fq '## [0.2.0] - 2026-09-19' "$root/CHANGELOG.md"
+test "$(bash scripts/extract-release-notes.sh 0.2.0 "$root/CHANGELOG.md")" = $'\n### Added\n\n- Change'
 
-if scripts/prepare-release.sh --root "$root" 0.1.0; then exit 1; fi
-if scripts/prepare-release.sh --root "$root" v0.3.0; then exit 1; fi
+if bash scripts/prepare-release.sh --root "$root" 0.1.0; then exit 1; fi
+if bash scripts/prepare-release.sh --root "$root" v0.3.0; then exit 1; fi
+if bash scripts/prepare-release.sh --root "$root" 1.0.0-alpha.01; then exit 1; fi
 git -C "$root" tag v0.2.1
-if scripts/prepare-release.sh --root "$root" 0.2.1; then exit 1; fi
+if bash scripts/prepare-release.sh --root "$root" 0.2.1; then exit 1; fi
+
+sed -i 's/0.2.0/1.0.0-beta.2/g' "$root/Cargo.toml" "$root/Cargo.lock"
+cat > "$root/CHANGELOG.md" <<'EOF'
+## [Unreleased]
+
+### Added
+
+- Prerelease change
+EOF
+bash scripts/prepare-release.sh --root "$root" 1.0.0-beta.10
+grep -Fq 'version = "1.0.0-beta.10"' "$root/Cargo.toml"

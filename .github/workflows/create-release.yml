@@ -10,6 +10,9 @@ on:
 
 permissions: {}
 
+env:
+  RELEASE_RUST_VERSION: "1.89.0"
+
 concurrency:
   group: release
   cancel-in-progress: false
@@ -22,7 +25,7 @@ jobs:
     needs: ci
     runs-on: ubuntu-24.04
     permissions:
-      contents: write
+      contents: read
     outputs:
       release_ref: ${{ steps.release.outputs.release_ref }}
       existing: ${{ steps.release.outputs.existing }}
@@ -36,6 +39,12 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?$ ]]
+          if [[ "$VERSION" == *-* ]]; then
+            IFS=. read -r -a prerelease_ids <<< "${VERSION#*-}"
+            for identifier in "${prerelease_ids[@]}"; do
+              [[ ! "$identifier" =~ ^0[0-9]+$ ]]
+            done
+          fi
           test "$GITHUB_REF" = "refs/heads/main"
           git fetch origin main --tags
           test "$GITHUB_SHA" = "$(git rev-parse origin/main)"
@@ -78,7 +87,6 @@ jobs:
           test "$(printf '%s\n' "$changed" | grep -Ev '^(Cargo\.toml|Cargo\.lock|CHANGELOG\.md)$' || true)" = ""
           cargo check --locked
           cargo test --all-targets
-          cargo publish --dry-run --locked
       - id: tag
         env:
           VERSION: ${{ inputs.version }}
@@ -87,6 +95,7 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git commit -am "chore(release): v$VERSION"
+          cargo publish --dry-run --locked
           git tag --annotate "v$VERSION" --message "Release v$VERSION"
           git fetch origin main
           test "$(git rev-parse HEAD^)" = "$(git rev-parse origin/main)"
@@ -114,20 +123,24 @@ jobs:
           ref: ${{ needs.prepare.outputs.release_ref || needs.preflight.outputs.release_ref }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: sudo apt-get update && sudo apt-get install --yes musl-tools
-      - run: rustup target add ${{ matrix.target }}
+      - run: rustup toolchain install "$RELEASE_RUST_VERSION" --profile minimal
+      - run: rustup target add --toolchain "$RELEASE_RUST_VERSION" ${{ matrix.target }}
       - env:
           VERSION: ${{ inputs.version }}
           TARGET: ${{ matrix.target }}
           ASSET: ${{ matrix.asset }}
         run: |
           set -euo pipefail
-          cargo build --release --locked --target "$TARGET"
+          cargo +"$RELEASE_RUST_VERSION" build --release --locked --target "$TARGET"
           mkdir dist
           install -m 755 "target/$TARGET/release/kmux" dist/kmux
           test "$(dist/kmux --version)" = "kmux $VERSION"
           dist/kmux --help >/dev/null
-          file dist/kmux
-          ldd dist/kmux || true
+          file dist/kmux | grep -Eq 'statically linked|static-pie'
+          if ldd dist/kmux >/dev/null 2>&1; then
+            echo "expected a static MUSL binary" >&2
+            exit 1
+          fi
           tar -czf "kmux-linux-$ASSET.tar.gz" -C dist kmux -C .. LICENSE README.md CHANGELOG.md
           sha256sum "kmux-linux-$ASSET.tar.gz" > "kmux-linux-$ASSET.tar.gz.sha256"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -139,7 +152,8 @@ jobs:
             kmux-linux-${{ matrix.asset }}.tar.gz.sha256
 
   deb:
-    needs: build
+    needs: [preflight, prepare, build]
+    if: always() && !failure() && !cancelled()
     strategy:
       matrix:
         include:
@@ -155,7 +169,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.preflight.outputs.release_ref }}
+          ref: ${{ needs.prepare.outputs.release_ref || needs.preflight.outputs.release_ref }}
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: kmux-linux-${{ matrix.asset }}
@@ -169,6 +183,9 @@ jobs:
           "$HOME/go/bin/nfpm" package --config packaging/nfpm.yaml --packager deb --target "kmux_${VERSION}_${ARCH}.deb"
           dpkg-deb --info "kmux_${VERSION}_${ARCH}.deb"
           dpkg-deb --contents "kmux_${VERSION}_${ARCH}.deb" | grep -Fq ./usr/bin/kmux
+          mkdir extracted
+          dpkg-deb -x "kmux_${VERSION}_${ARCH}.deb" extracted
+          cmp dist/kmux extracted/usr/bin/kmux
           sudo dpkg -i "kmux_${VERSION}_${ARCH}.deb"
           test "$(kmux --version)" = "kmux $VERSION"
           kmux --help >/dev/null
@@ -196,6 +213,7 @@ jobs:
           merge-multiple: true
       - env:
           VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           sha256sum kmux-linux-*.tar.gz kmux_*.deb > SHA256SUMS
@@ -212,7 +230,13 @@ jobs:
           EOF
           tag="v$VERSION"
           if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" kmux-linux-*.tar.gz kmux-linux-*.sha256 kmux_*.deb kmux_*.deb.sha256 SHA256SUMS --clobber
+            if [[ "$(gh release view "$tag" --json isDraft --jq .isDraft)" == true ]]; then
+              gh release upload "$tag" kmux-linux-*.tar.gz kmux-linux-*.sha256 kmux_*.deb kmux_*.deb.sha256 SHA256SUMS --clobber
+            else
+              for asset in kmux-linux-*.tar.gz kmux-linux-*.sha256 kmux_*.deb kmux_*.deb.sha256 SHA256SUMS; do
+                gh release view "$tag" --json assets --jq '.assets[].name' | grep -Fxq "$asset"
+              done
+            fi
           else
             prerelease=()
             case "$VERSION" in *-*) prerelease=(--prerelease);; esac
@@ -223,11 +247,15 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
         run: |
           set -euo pipefail
-          if curl --fail --silent --show-error "https://crates.io/api/v1/crates/ssh-kmux/$VERSION" >/dev/null; then
+          registry_has_version() {
+            curl --fail --silent --show-error "https://crates.io/api/v1/crates/ssh-kmux/$VERSION" >/dev/null
+          }
+          if registry_has_version; then
             echo "ssh-kmux $VERSION is already published"
-          else
-            cargo publish --locked
+          elif ! cargo publish --locked; then
+            registry_has_version || exit 1
           fi
       - env:
           VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
         run: gh release edit "v$VERSION" --draft=false

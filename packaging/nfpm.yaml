@@ -3,7 +3,7 @@ arch: ${ARCH}
 platform: linux
 version: ${VERSION}
 section: utils
-maintainer: Otavio Gonzaga
+maintainer: Otavio Gonzaga <otaviolgonzaga@gmail.com>
 description: Run commands with a filtered view of an SSH agent.
 homepage: https://github.com/OtavioGonzaga/kmux
 license: MIT

@@ -17,6 +17,15 @@ if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A
   printf '%s\n' "prepare-release: version must be SemVer without a v prefix or build metadata" >&2
   exit 1
 fi
+if [[ "$version" == *-* ]]; then
+  IFS=. read -r -a prerelease_ids <<< "${version#*-}"
+  for identifier in "${prerelease_ids[@]}"; do
+    if [[ "$identifier" =~ ^0[0-9]+$ ]]; then
+      printf '%s\n' "prepare-release: numeric prerelease identifiers cannot have leading zeroes" >&2
+      exit 1
+    fi
+  done
+fi
 
 cargo_toml="$root/Cargo.toml"
 cargo_lock="$root/Cargo.lock"
@@ -32,15 +41,35 @@ if [[ -z "$current" ]]; then
   exit 1
 fi
 
-version_key() {
-  local value="$1" core pre major minor patch
-  core="${value%%-*}"
-  pre="${value#"$core"}"
-  IFS=. read -r major minor patch <<< "$core"
-  printf '%08d.%08d.%08d.%s' "$major" "$minor" "$patch" "${pre:--zzzz}"
+semver_less() {
+  local left="$1" right="$2" left_core right_core left_pre right_pre
+  left_core="${left%%-*}"
+  right_core="${right%%-*}"
+  left_pre="${left#"$left_core"}"
+  right_pre="${right#"$right_core"}"
+  local -a left_parts right_parts left_ids right_ids
+  IFS=. read -r -a left_parts <<< "$left_core"; IFS=. read -r -a right_parts <<< "$right_core"
+  for index in 0 1 2; do
+    ((10#${left_parts[index]} < 10#${right_parts[index]})) && return 0
+    ((10#${left_parts[index]} > 10#${right_parts[index]})) && return 1
+  done
+  [[ -z "$left_pre" && -n "$right_pre" ]] && return 1
+  [[ -n "$left_pre" && -z "$right_pre" ]] && return 0
+  [[ -z "$left_pre" ]] && return 1
+  IFS=. read -r -a left_ids <<< "${left_pre#-}"; IFS=. read -r -a right_ids <<< "${right_pre#-}"
+  for ((index=0; index<${#left_ids[@]} && index<${#right_ids[@]}; index++)); do
+    [[ ${left_ids[index]} == "${right_ids[index]}" ]] && continue
+    if [[ ${left_ids[index]} =~ ^[0-9]+$ && ${right_ids[index]} =~ ^[0-9]+$ ]]; then
+      ((10#${left_ids[index]} < 10#${right_ids[index]})) && return 0 || return 1
+    fi
+    [[ ${left_ids[index]} =~ ^[0-9]+$ && ! ${right_ids[index]} =~ ^[0-9]+$ ]] && return 0
+    [[ ! ${left_ids[index]} =~ ^[0-9]+$ && ${right_ids[index]} =~ ^[0-9]+$ ]] && return 1
+    [[ ${left_ids[index]} < ${right_ids[index]} ]] && return 0 || return 1
+  done
+  ((${#left_ids[@]} < ${#right_ids[@]}))
 }
 
-if [[ "$(version_key "$version")" < "$(version_key "$current")" ]]; then
+if semver_less "$version" "$current"; then
   printf '%s\n' "prepare-release: release version is lower than current version $current" >&2
   exit 1
 fi
