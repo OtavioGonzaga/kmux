@@ -11,6 +11,7 @@ use std::io::{IsTerminal, stdin};
 pub struct Candidate {
     pub entry: KeyEntry,
     pub identity: Identity,
+    pub matched_scope: ScopePath,
 }
 
 impl fmt::Display for Candidate {
@@ -19,7 +20,7 @@ impl fmt::Display for Candidate {
             f,
             "{} - {} - {}",
             self.entry.alias(),
-            self.entry.scopes().iter().next().unwrap(),
+            self.matched_scope,
             self.identity.comment.as_deref().unwrap_or("no comment")
         )
     }
@@ -34,20 +35,25 @@ pub fn resolve(config: &Config, scope: ScopePath) -> Result<Vec<Candidate>, Sele
         .collect::<BTreeSet<_>>();
     let mut available = BTreeMap::new();
     for name in required_agents {
-        let definition = config.agents().get(name).expect("validated config agent");
+        let definition = config
+            .agents()
+            .get(name)
+            .ok_or_else(|| SelectionError::MissingAgent(name.clone()))?;
         let agent = UnixSocketAgent::new(definition.socket().to_owned());
         available.insert(name.clone(), agent.identities()?);
     }
-    Ok(resolve_available(entries, &available))
+    Ok(resolve_available(entries, &available, &query))
 }
 
 pub fn resolve_available(
     entries: Vec<&KeyEntry>,
     available: &BTreeMap<crate::agent::AgentName, Vec<Identity>>,
+    query: &ScopeQuery,
 ) -> Vec<Candidate> {
     entries
         .into_iter()
         .filter_map(|entry| {
+            let matched_scope = query.matching_scope(entry)?;
             available
                 .get(entry.agent())?
                 .iter()
@@ -56,6 +62,7 @@ pub fn resolve_available(
                 .map(|identity| Candidate {
                     entry: entry.clone(),
                     identity,
+                    matched_scope,
                 })
         })
         .collect()
@@ -83,10 +90,18 @@ pub fn choose_with(
     candidates: Vec<Candidate>,
     chooser: &dyn CandidateChooser,
 ) -> Result<Candidate, SelectionError> {
+    choose_with_mode(candidates, stdin().is_terminal(), chooser)
+}
+
+pub fn choose_with_mode(
+    candidates: Vec<Candidate>,
+    interactive: bool,
+    chooser: &dyn CandidateChooser,
+) -> Result<Candidate, SelectionError> {
     match candidates.len() {
         0 => Err(SelectionError::NoCandidates),
         1 => Ok(candidates.into_iter().next().unwrap()),
-        _ if !interactive_terminal_available() => Err(SelectionError::Ambiguous(
+        _ if !interactive => Err(SelectionError::Ambiguous(
             candidates
                 .into_iter()
                 .map(|candidate| candidate.to_string())
@@ -96,23 +111,13 @@ pub fn choose_with(
     }
 }
 
-fn interactive_terminal_available() -> bool {
-    terminal_available(
-        stdin().is_terminal(),
-        std::fs::File::open("/dev/tty").is_ok(),
-    )
-}
-
-fn terminal_available(stdin_is_terminal: bool, tty_available: bool) -> bool {
-    stdin_is_terminal || tty_available
-}
-
 #[derive(Debug)]
 pub enum SelectionError {
     Agent(crate::agent::AgentError),
     NoCandidates,
     Ambiguous(Vec<String>),
     Prompt(String),
+    MissingAgent(crate::agent::AgentName),
 }
 impl From<crate::agent::AgentError> for SelectionError {
     fn from(value: crate::agent::AgentError) -> Self {
@@ -130,6 +135,7 @@ impl fmt::Display for SelectionError {
                 candidates.join(", ")
             ),
             Self::Prompt(error) => write!(f, "identity selection failed: {error}"),
+            Self::MissingAgent(agent) => write!(f, "configured agent '{agent}' is missing"),
         }
     }
 }
@@ -137,11 +143,9 @@ impl std::error::Error for SelectionError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Candidate, CandidateChooser, SelectionError, choose_with, resolve, terminal_available,
-    };
+    use super::{Candidate, CandidateChooser, SelectionError, choose_with_mode, resolve};
     use crate::agent::{AgentDefinition, AgentName, read_frame, write_frame};
-    use crate::catalog::{Fingerprint, KeyAlias, KeyCatalog, KeyEntry};
+    use crate::catalog::{Fingerprint, Identity, KeyAlias, KeyCatalog, KeyEntry};
     use crate::config::Config;
     use crate::scope::ScopePath;
     use std::collections::BTreeMap;
@@ -150,13 +154,6 @@ mod tests {
     use std::str::FromStr;
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    #[test]
-    fn terminal_selection_does_not_depend_on_command_stdout() {
-        assert!(terminal_available(true, false));
-        assert!(terminal_available(false, true));
-        assert!(!terminal_available(false, false));
-    }
 
     #[test]
     fn resolution_does_not_contact_unrelated_agents() {
@@ -202,7 +199,8 @@ mod tests {
                 (old.clone(), AgentDefinition::new(old, &old_socket).unwrap()),
             ]),
             KeyCatalog::from_entries([entry]).unwrap(),
-        );
+        )
+        .unwrap();
         assert_eq!(
             resolve(&config, ScopePath::from_str("work").unwrap())
                 .unwrap()
@@ -217,18 +215,64 @@ mod tests {
         let _ = std::fs::remove_file(old_socket);
     }
 
-    struct NeverChooser;
-    impl CandidateChooser for NeverChooser {
-        fn choose(&self, _: Vec<Candidate>) -> Result<Candidate, SelectionError> {
-            panic!("chooser should not be invoked for zero or one candidates")
+    struct FakeChooser(std::cell::Cell<usize>);
+    impl CandidateChooser for FakeChooser {
+        fn choose(&self, candidates: Vec<Candidate>) -> Result<Candidate, SelectionError> {
+            self.0.set(self.0.get() + 1);
+            Ok(candidates.into_iter().next().unwrap())
         }
     }
 
     #[test]
-    fn single_candidate_is_automatic() {
+    fn selection_mode_and_chooser_invocation_are_correct() {
+        let chooser = FakeChooser(std::cell::Cell::new(0));
         assert!(matches!(
-            choose_with(Vec::new(), &NeverChooser),
+            choose_with_mode(Vec::new(), true, &chooser),
             Err(SelectionError::NoCandidates)
         ));
+        let candidate = candidate("hogix/production", "personal/server");
+        assert!(candidate.to_string().contains("hogix/production"));
+        assert!(!candidate.to_string().contains("personal/server"));
+        assert_eq!(
+            choose_with_mode(vec![candidate.clone()], false, &chooser).unwrap(),
+            candidate
+        );
+        assert_eq!(chooser.0.get(), 0);
+        assert!(matches!(
+            choose_with_mode(vec![candidate.clone(), candidate.clone()], false, &chooser),
+            Err(SelectionError::Ambiguous(_))
+        ));
+        assert_eq!(
+            choose_with_mode(vec![candidate.clone(), candidate], true, &chooser)
+                .unwrap()
+                .matched_scope
+                .to_string(),
+            "hogix/production"
+        );
+        assert_eq!(chooser.0.get(), 1);
+    }
+
+    fn candidate(matched_scope: &str, other_scope: &str) -> Candidate {
+        let agent = AgentName::new("agent").unwrap();
+        let entry = KeyEntry::new(
+            KeyAlias::new("key").unwrap(),
+            Fingerprint::from_public_key_blob(b"key"),
+            agent,
+            [
+                ScopePath::from_str(other_scope).unwrap(),
+                ScopePath::from_str(matched_scope).unwrap(),
+            ],
+            BTreeMap::new(),
+        )
+        .unwrap();
+        Candidate {
+            entry,
+            identity: Identity {
+                key_blob: b"key".to_vec(),
+                fingerprint: Fingerprint::from_public_key_blob(b"key"),
+                comment: None,
+            },
+            matched_scope: ScopePath::from_str(matched_scope).unwrap(),
+        }
     }
 }

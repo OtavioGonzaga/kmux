@@ -35,31 +35,24 @@ fn listed_scopes(config: &Config) -> BTreeSet<kmux::scope::ScopePath> {
 #[cfg(test)]
 mod tests {
     use super::listed_scopes;
-    use kmux::agent::{AgentDefinition, AgentName};
-    use kmux::catalog::{Fingerprint, KeyAlias, KeyCatalog, KeyEntry};
     use kmux::config::Config;
-    use kmux::scope::ScopePath;
-    use std::collections::BTreeMap;
-    use std::str::FromStr;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn scopes_include_derived_ancestors_in_order() {
-        let agent = AgentName::new("agent").unwrap();
-        let entry = KeyEntry::new(
-            KeyAlias::new("key").unwrap(),
-            Fingerprint::from_str("SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y").unwrap(),
-            agent.clone(),
-            [ScopePath::from_str("hogix/postgres-walg/production").unwrap()],
-            BTreeMap::new(),
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kmux-list-{unique}.yaml"));
+        fs::write(
+            &path,
+            "version: 1\nagents:\n  agent:\n    type: unix\n    socket: /tmp/agent.sock\nkeys:\n  key:\n    fingerprint: SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y\n    agent: agent\n    scopes: [hogix/postgres-walg/production]\n",
         )
         .unwrap();
-        let config = Config::from_parts(
-            BTreeMap::from([(
-                agent.clone(),
-                AgentDefinition::new(agent, "/tmp/agent.sock").unwrap(),
-            )]),
-            KeyCatalog::from_entries([entry]).unwrap(),
-        );
+        let config = Config::load(&path).unwrap();
+        fs::remove_file(path).unwrap();
         assert_eq!(
             listed_scopes(&config)
                 .iter()

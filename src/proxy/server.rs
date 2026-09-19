@@ -12,8 +12,13 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 struct Connections {
-    active: Mutex<BTreeMap<u64, UnixStream>>,
+    active: Mutex<BTreeMap<u64, ConnectionSession>>,
     workers: Mutex<Vec<JoinHandle<()>>>,
+}
+
+struct ConnectionSession {
+    downstream: UnixStream,
+    upstream: Option<UnixStream>,
 }
 
 pub struct ProxyServer {
@@ -52,25 +57,34 @@ impl ProxyServer {
                                 continue;
                             }
                         };
-                        listener_connections
-                            .active
-                            .lock()
-                            .unwrap()
-                            .insert(connection_id, control);
+                        lock(&listener_connections.active).insert(
+                            connection_id,
+                            ConnectionSession {
+                                downstream: control,
+                                upstream: None,
+                            },
+                        );
                         let worker_agent = agent.clone();
                         let worker_connections = listener_connections.clone();
                         let worker = thread::spawn(move || {
                             tracing::debug!(connection_id, "accepted downstream agent connection");
-                            if let Err(error) = worker_agent.serve_connection(stream) {
+                            let upstream_connections = worker_connections.clone();
+                            if let Err(error) =
+                                worker_agent.serve_connection(stream, move |upstream| {
+                                    if let Some(session) =
+                                        lock(&upstream_connections.active).get_mut(&connection_id)
+                                    {
+                                        session.upstream = Some(upstream);
+                                    } else {
+                                        let _ = upstream.shutdown(Shutdown::Both);
+                                    }
+                                })
+                            {
                                 tracing::debug!(connection_id, %error, "agent connection closed with error");
                             }
-                            worker_connections
-                                .active
-                                .lock()
-                                .unwrap()
-                                .remove(&connection_id);
+                            lock(&worker_connections.active).remove(&connection_id);
                         });
-                        listener_connections.workers.lock().unwrap().push(worker);
+                        lock(&listener_connections.workers).push(worker);
                     }
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(10));
@@ -100,13 +114,17 @@ impl ProxyServer {
         if let Some(listener) = self.listener.take() {
             let _ = listener.join();
         }
-        for stream in self.connections.active.lock().unwrap().values() {
-            let _ = stream.shutdown(Shutdown::Both);
+        for session in lock(&self.connections.active).values() {
+            let _ = session.downstream.shutdown(Shutdown::Both);
+            if let Some(upstream) = &session.upstream {
+                let _ = upstream.shutdown(Shutdown::Both);
+            }
         }
-        let workers = std::mem::take(&mut *self.connections.workers.lock().unwrap());
+        let workers = std::mem::take(&mut *lock(&self.connections.workers));
         for worker in workers {
             let _ = worker.join();
         }
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -114,6 +132,11 @@ impl Drop for ProxyServer {
     fn drop(&mut self) {
         tracing::debug!(socket = %self.path.display(), "stopping filtered agent proxy");
         self.shutdown();
-        let _ = std::fs::remove_file(&self.path);
     }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }

@@ -1,8 +1,9 @@
 use kmux::catalog::Fingerprint;
-use std::io::{Read, Write};
+use rustix::process::{Pid, Signal, kill_process};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -12,6 +13,60 @@ fn unique_path(name: &str) -> PathBuf {
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!("kmux-{name}-{}-{unique}", std::process::id()))
+}
+
+#[test]
+fn exec_forwards_sigint_and_sigterm_to_the_direct_child() {
+    for signal in [Signal::INT, Signal::TERM] {
+        let dir = unique_path("signal-test");
+        std::fs::create_dir(&dir).unwrap();
+        let upstream_socket = dir.join("upstream.sock");
+        let listener = UnixListener::bind(&upstream_socket).unwrap();
+        let key_blob = b"signal-public-key".to_vec();
+        let worker_blob = key_blob.clone();
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert_eq!(read_frame(&mut stream), [11]);
+            let mut response = vec![12];
+            response.extend_from_slice(&1_u32.to_be_bytes());
+            put_string(&mut response, &worker_blob);
+            put_string(&mut response, b"signal key");
+            write_frame(&mut stream, &response);
+        });
+        let fingerprint = Fingerprint::from_public_key_blob(&key_blob);
+        let config = dir.join("config.yaml");
+        std::fs::write(&config, format!("version: 1\nagents:\n  test:\n    type: unix\n    socket: {}\nkeys:\n  test-key:\n    fingerprint: \"{fingerprint}\"\n    agent: test\n    scopes: [test]\n", upstream_socket.display())).unwrap();
+        let trap = match signal {
+            Signal::INT => "INT",
+            Signal::TERM => "TERM",
+            _ => unreachable!(),
+        };
+        let mut kmux = Command::new(env!("CARGO_BIN_EXE_kmux"))
+            .args([
+                "--config",
+                config.to_str().unwrap(),
+                "exec",
+                "test",
+                "--",
+                "sh",
+                "-c",
+            ])
+            .arg(format!(
+                "echo ready; trap 'exit 0' {trap}; while :; do sleep 1; done"
+            ))
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut ready = String::new();
+        BufReader::new(kmux.stdout.take().unwrap())
+            .read_line(&mut ready)
+            .unwrap();
+        assert_eq!(ready, "ready\n");
+        kill_process(Pid::from_child(&kmux), signal).unwrap();
+        assert!(kmux.wait().unwrap().success());
+        worker.join().unwrap();
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 fn write_frame(stream: &mut impl Write, payload: &[u8]) {

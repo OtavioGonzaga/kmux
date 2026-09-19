@@ -26,8 +26,13 @@ impl FilteredAgent {
     }
 
     /// Serves one downstream connection using one connection to the upstream agent.
-    pub fn serve_connection(&self, mut downstream: UnixStream) -> Result<(), ProxyError> {
+    pub fn serve_connection(
+        &self,
+        mut downstream: UnixStream,
+        on_upstream_connected: impl FnOnce(UnixStream),
+    ) -> Result<(), ProxyError> {
         let mut upstream = self.upstream.connect()?;
+        on_upstream_connected(upstream.try_clone().map_err(ProxyError::Io)?);
         tracing::debug!("connected downstream client to upstream agent");
         loop {
             let request = match read_frame(&mut downstream) {

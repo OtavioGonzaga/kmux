@@ -28,7 +28,7 @@ pub fn import_agent(
                 if let Some(comment) = identity
                     .comment
                     .as_deref()
-                    .filter(|comment| !comment.contains(['\n', '\r']))
+                    .filter(|comment| comment.chars().all(|character| !character.is_control()))
                 {
                     println!("  # {comment}");
                 }
@@ -50,7 +50,7 @@ pub fn import_agent(
                 if let Some(comment) = identity
                     .comment
                     .as_deref()
-                    .filter(|comment| !comment.contains(['\n', '\r']))
+                    .filter(|comment| comment.chars().all(|character| !character.is_control()))
                 {
                     println!("# {comment}");
                 }
@@ -155,6 +155,28 @@ mod tests {
         assert_eq!(
             aliases.iter().map(ToString::to_string).collect::<Vec<_>>(),
             ["deploy-key-2", "deploy-key-3"]
+        );
+    }
+
+    #[test]
+    fn unusable_and_non_ascii_comments_fall_back_deterministically() {
+        let aliases = suggested_aliases(
+            &[
+                identity(Some("  Multi___separator!!! Key  ")),
+                identity(Some("")),
+                identity(Some("---")),
+                identity(Some("Chave deploy")),
+            ],
+            [] as [KeyAlias; 0],
+        );
+        assert_eq!(
+            aliases.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [
+                "multi-separator-key",
+                "identity-2",
+                "identity-3",
+                "chave-deploy"
+            ]
         );
     }
 }

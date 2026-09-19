@@ -2,7 +2,7 @@
 name = "ssh-kmux"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.87"
+rust-version = "1.89"
 description = "Run commands with a filtered view of an SSH agent"
 categories = ["command-line-utilities", "authentication"]
 keywords = ["ssh", "agent", "security"]
@@ -21,12 +21,13 @@ path = "src/main.rs"
 base64 = "0.23.1"
 clap = { version = "4.6.7", features = ["derive"] }
 inquire = "0.9.4"
-libc = "0.2.189"
+rustix = { version = "1.1.5", features = ["process"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-serde_yaml = "0.9.34"
+serde-saphyr = { version = "=0.0.11", default-features = false }
 sha2 = "0.11.0"
 signal-hook = "0.4.4"
+tempfile = "3.27.0"
 toml = "1.1.6"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }

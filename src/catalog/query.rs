@@ -18,10 +18,15 @@ impl ScopeQuery {
     }
 
     fn matches(&self, entry: &KeyEntry) -> bool {
+        self.matching_scope(entry).is_some()
+    }
+
+    pub fn matching_scope(&self, entry: &KeyEntry) -> Option<ScopePath> {
         entry
             .scopes()
             .iter()
-            .any(|entry_scope| self.scope.is_prefix_of(entry_scope))
+            .find(|scope| self.scope.is_prefix_of(scope))
+            .cloned()
     }
 }
 

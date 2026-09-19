@@ -43,8 +43,9 @@ mod tests {
     use std::os::unix::net::{UnixListener, UnixStream};
     use std::path::PathBuf;
     use std::sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
     };
     use std::thread;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -54,6 +55,7 @@ mod tests {
         running: Arc<AtomicBool>,
         connections: Arc<AtomicUsize>,
         worker: Option<thread::JoinHandle<()>>,
+        connection_workers: Arc<Mutex<Vec<thread::JoinHandle<()>>>>,
     }
 
     impl FakeAgent {
@@ -65,13 +67,18 @@ mod tests {
             let worker_running = running.clone();
             let connections = Arc::new(AtomicUsize::new(0));
             let worker_connections = connections.clone();
+            let connection_workers = Arc::new(Mutex::new(Vec::new()));
+            let listener_workers = connection_workers.clone();
             let worker = thread::spawn(move || {
                 while worker_running.load(Ordering::Acquire) {
                     match listener.accept() {
                         Ok((stream, _)) => {
                             let identities = identities.clone();
                             let id = worker_connections.fetch_add(1, Ordering::Relaxed) + 1;
-                            thread::spawn(move || serve_fake_connection(stream, identities, id));
+                            let workers = listener_workers.clone();
+                            workers.lock().unwrap().push(thread::spawn(move || {
+                                serve_fake_connection(stream, identities, id)
+                            }));
                         }
                         Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(1))
@@ -85,6 +92,7 @@ mod tests {
                 running,
                 connections,
                 worker: Some(worker),
+                connection_workers,
             }
         }
     }
@@ -94,6 +102,9 @@ mod tests {
             self.running.store(false, Ordering::Release);
             let _ = UnixStream::connect(&self.path);
             if let Some(worker) = self.worker.take() {
+                worker.join().unwrap();
+            }
+            for worker in std::mem::take(&mut *self.connection_workers.lock().unwrap()) {
                 worker.join().unwrap();
             }
             let _ = std::fs::remove_file(&self.path);
@@ -157,10 +168,14 @@ mod tests {
         assert_eq!(request(&mut first, &sign_request(&allowed)), [14, 1]);
         assert_eq!(request(&mut first, &sign_request(b"denied")), [FAILURE]);
         assert_eq!(request(&mut first, &[SIGN_REQUEST]), [FAILURE]);
+        let mut trailing = sign_request(&allowed);
+        trailing.push(0);
+        assert_eq!(request(&mut first, &trailing), [FAILURE]);
         assert_eq!(request(&mut first, &[99]), [FAILURE]);
         let mut extension = vec![EXTENSION];
         put_string(&mut extension, b"unknown@kmux");
         assert_eq!(request(&mut first, &extension), [EXTENSION_FAILURE]);
+        assert_eq!(request(&mut first, &[EXTENSION]), [EXTENSION_FAILURE]);
         let mut session_bind = vec![EXTENSION];
         put_string(&mut session_bind, b"session-bind@openssh.com");
         assert_eq!(request(&mut first, &session_bind), [6, 1]);
@@ -174,17 +189,51 @@ mod tests {
         let allowed = b"allowed".to_vec();
         let upstream = FakeAgent::start(vec![allowed.clone()]);
         let path = socket_path("proxy-drop");
-        let server = ProxyServer::bind(
+        let mut server = ProxyServer::bind(
             &path,
             FilteredAgent::new(UnixSocketAgent::new(&upstream.path), [allowed.clone()]),
         )
         .unwrap();
         let mut downstream = UnixStream::connect(server.path()).unwrap();
         assert_eq!(request(&mut downstream, &sign_request(&allowed)), [14, 1]);
-        drop(server);
+        server.shutdown();
+        server.shutdown();
         assert!(!path.exists());
         if write_frame(&mut downstream, &sign_request(&allowed)).is_ok() {
             assert!(read_frame(&mut downstream).is_err());
         }
+    }
+
+    #[test]
+    fn shutdown_interrupts_a_worker_waiting_for_upstream_response() {
+        let allowed = b"allowed".to_vec();
+        let upstream_path = socket_path("stalled-upstream");
+        let listener = UnixListener::bind(&upstream_path).unwrap();
+        let (received_request, request_received) = mpsc::channel();
+        let (upstream_closed, closed) = mpsc::channel();
+        let upstream_worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert_eq!(read_frame(&mut stream).unwrap()[0], SIGN_REQUEST);
+            received_request.send(()).unwrap();
+            assert!(read_frame(&mut stream).is_err());
+            upstream_closed.send(()).unwrap();
+        });
+        let path = socket_path("stalled-proxy");
+        let mut server = ProxyServer::bind(
+            &path,
+            FilteredAgent::new(UnixSocketAgent::new(&upstream_path), [allowed.clone()]),
+        )
+        .unwrap();
+        let mut downstream = UnixStream::connect(server.path()).unwrap();
+        write_frame(&mut downstream, &sign_request(&allowed)).unwrap();
+        request_received
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        server.shutdown();
+        assert!(!path.exists());
+        assert!(read_frame(&mut downstream).is_err());
+        closed.recv_timeout(Duration::from_secs(1)).unwrap();
+        upstream_worker.join().unwrap();
+        let _ = std::fs::remove_file(upstream_path);
     }
 }

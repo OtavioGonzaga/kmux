@@ -5,11 +5,13 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::env;
 use std::fmt;
-use std::fs;
+use std::fs::File;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 const CONFIG_ENV: &str = "KMUX_CONFIG";
+const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 const SUPPORTED_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -20,10 +22,6 @@ pub struct Config {
 
 impl Config {
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
-        let content = fs::read_to_string(path).map_err(|source| ConfigError::Read {
-            path: path.to_owned(),
-            source,
-        })?;
         let decoder: &dyn ConfigDecoder =
             match path.extension().and_then(|extension| extension.to_str()) {
                 Some("yaml" | "yml") => &YamlConfigDecoder,
@@ -31,6 +29,7 @@ impl Config {
                 Some("toml") => &TomlConfigDecoder,
                 _ => return Err(ConfigError::UnsupportedFormat(path.to_owned())),
             };
+        let content = read_config(path)?;
         Self::from_schema(decoder.decode(&content)?)
     }
 
@@ -47,7 +46,11 @@ impl Config {
             .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
             .ok_or(ConfigError::ConfigHomeUnavailable)?;
         let directory = config_home.join("kmux");
-        let candidates = ["config.yaml", "config.json", "config.toml"]
+        Self::discover_in(directory)
+    }
+
+    fn discover_in(directory: PathBuf) -> Result<ConfigPath, ConfigError> {
+        let candidates = ["config.yaml", "config.yml", "config.json", "config.toml"]
             .into_iter()
             .map(|name| directory.join(name))
             .filter(|path| path.is_file())
@@ -68,8 +71,24 @@ impl Config {
         &self.catalog
     }
 
-    pub fn from_parts(agents: BTreeMap<AgentName, AgentDefinition>, catalog: KeyCatalog) -> Self {
-        Self { agents, catalog }
+    pub(crate) fn from_parts(
+        agents: BTreeMap<AgentName, AgentDefinition>,
+        catalog: KeyCatalog,
+    ) -> Result<Self, ConfigError> {
+        for (name, definition) in &agents {
+            if name != definition.name() {
+                return Err(ConfigError::Validation(format!(
+                    "agent map key '{name}' does not match its definition"
+                )));
+            }
+        }
+        for entry in catalog.entries() {
+            if !agents.contains_key(entry.agent()) {
+                return Err(ConfigError::UnknownAgent(entry.agent().clone()));
+            }
+        }
+
+        Ok(Self { agents, catalog })
     }
 
     fn from_schema(schema: ConfigSchema) -> Result<Self, ConfigError> {
@@ -115,7 +134,7 @@ impl Config {
 
         let catalog = KeyCatalog::from_entries(entries)
             .map_err(|source| ConfigError::Validation(source.to_string()))?;
-        Ok(Self { agents, catalog })
+        Self::from_parts(agents, catalog)
     }
 }
 
@@ -134,6 +153,10 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
+    TooLarge {
+        path: PathBuf,
+        limit: usize,
+    },
     Parse(String),
     UnsupportedFormat(PathBuf),
     ConfigHomeUnavailable,
@@ -151,6 +174,11 @@ impl fmt::Display for ConfigError {
             Self::Read { path, source } => {
                 write!(formatter, "could not read '{}': {source}", path.display())
             }
+            Self::TooLarge { path, limit } => write!(
+                formatter,
+                "configuration file '{}' exceeds the {limit}-byte limit",
+                path.display()
+            ),
             Self::Parse(source) => write!(formatter, "invalid configuration: {source}"),
             Self::UnsupportedFormat(path) => {
                 write!(formatter, "unsupported config format: '{}'", path.display())
@@ -194,17 +222,17 @@ impl std::error::Error for ConfigError {
     }
 }
 
-pub trait ConfigDecoder {
+trait ConfigDecoder {
     fn decode(&self, source: &str) -> Result<ConfigSchema, ConfigError>;
 }
 
-pub struct YamlConfigDecoder;
-pub struct JsonConfigDecoder;
-pub struct TomlConfigDecoder;
+struct YamlConfigDecoder;
+struct JsonConfigDecoder;
+struct TomlConfigDecoder;
 
 impl ConfigDecoder for YamlConfigDecoder {
     fn decode(&self, source: &str) -> Result<ConfigSchema, ConfigError> {
-        serde_yaml::from_str(source).map_err(|error| ConfigError::Parse(error.to_string()))
+        serde_saphyr::from_str(source).map_err(|error| ConfigError::Parse(error.to_string()))
     }
 }
 
@@ -222,12 +250,38 @@ impl ConfigDecoder for TomlConfigDecoder {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ConfigSchema {
+struct ConfigSchema {
     version: u32,
     #[serde(default)]
     agents: BTreeMap<String, AgentSchema>,
     #[serde(default)]
     keys: BTreeMap<String, KeySchema>,
+}
+
+fn read_config(path: &Path) -> Result<String, ConfigError> {
+    let mut file = File::open(path).map_err(|source| ConfigError::Read {
+        path: path.to_owned(),
+        source,
+    })?;
+    let mut content = Vec::with_capacity(MAX_CONFIG_BYTES.min(8192));
+    file.by_ref()
+        .take((MAX_CONFIG_BYTES + 1) as u64)
+        .read_to_end(&mut content)
+        .map_err(|source| ConfigError::Read {
+            path: path.to_owned(),
+            source,
+        })?;
+    if content.len() > MAX_CONFIG_BYTES {
+        return Err(ConfigError::TooLarge {
+            path: path.to_owned(),
+            limit: MAX_CONFIG_BYTES,
+        });
+    }
+
+    String::from_utf8(content).map_err(|source| ConfigError::Read {
+        path: path.to_owned(),
+        source: io::Error::new(io::ErrorKind::InvalidData, source),
+    })
 }
 
 #[derive(Deserialize)]
@@ -256,8 +310,13 @@ struct KeySchema {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{Config, ConfigError, MAX_CONFIG_BYTES};
+    use crate::agent::{AgentDefinition, AgentName};
+    use crate::catalog::{Fingerprint, KeyAlias, KeyCatalog, KeyEntry};
+    use crate::scope::ScopePath;
+    use std::collections::BTreeMap;
     use std::fs;
+    use std::str::FromStr;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     const FINGERPRINT: &str = "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y";
@@ -284,6 +343,16 @@ mod tests {
             .as_nanos();
         let path = std::env::temp_dir().join(format!("kmux-config-{unique}.{extension}"));
         fs::write(&path, content).unwrap();
+        path
+    }
+
+    fn temporary_directory() -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kmux-config-{unique}"));
+        fs::create_dir(&path).unwrap();
         path
     }
 
@@ -315,10 +384,130 @@ mod tests {
             ),
         );
 
-        assert!(Config::load(&unknown_field).is_err());
-        assert!(Config::load(&unknown_agent).is_err());
+        assert!(matches!(
+            Config::load(&unknown_field),
+            Err(ConfigError::Parse(_))
+        ));
+        assert!(matches!(
+            Config::load(&unknown_agent),
+            Err(ConfigError::UnknownAgent(_))
+        ));
         fs::remove_file(unknown_field).unwrap();
         fs::remove_file(unknown_agent).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_yaml_syntax_and_types() {
+        let syntax = write_config("yaml", "version: [1\n");
+        let types = write_config("yaml", "version: one\n");
+
+        assert!(matches!(Config::load(&syntax), Err(ConfigError::Parse(_))));
+        assert!(matches!(Config::load(&types), Err(ConfigError::Parse(_))));
+        fs::remove_file(syntax).unwrap();
+        fs::remove_file(types).unwrap();
+    }
+
+    #[test]
+    fn rejects_duplicate_keys_and_multiple_documents() {
+        let duplicate = write_config("yaml", "version: 1\nversion: 1\n");
+        let multiple = write_config("yaml", "version: 1\n---\nversion: 1\n");
+
+        assert!(matches!(
+            Config::load(&duplicate),
+            Err(ConfigError::Parse(_))
+        ));
+        assert!(matches!(
+            Config::load(&multiple),
+            Err(ConfigError::Parse(_))
+        ));
+        fs::remove_file(duplicate).unwrap();
+        fs::remove_file(multiple).unwrap();
+    }
+
+    #[test]
+    fn resolves_yaml_anchors_and_aliases() {
+        let path = write_config(
+            "yaml",
+            &format!(
+                "version: 1\nagents:\n  &primary primary:\n    type: unix\n    socket: /run/user/1000/agent.sock\nkeys:\n  deploy:\n    fingerprint: {FINGERPRINT}\n    agent: *primary\n    scopes: [company/production]\n"
+            ),
+        );
+
+        assert!(Config::load(&path).is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn discovers_config_yml() {
+        let directory = temporary_directory();
+        let path = directory.join("config.yml");
+        fs::write(&path, config("yaml")).unwrap();
+
+        assert_eq!(
+            Config::discover_in(directory.clone()).unwrap().as_path(),
+            path
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_ambiguous_config_yaml_and_yml() {
+        let directory = temporary_directory();
+        fs::write(directory.join("config.yaml"), config("yaml")).unwrap();
+        fs::write(directory.join("config.yml"), config("yaml")).unwrap();
+        assert!(matches!(
+            Config::discover_in(directory.clone()),
+            Err(ConfigError::AmbiguousConfig(_))
+        ));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_files_larger_than_one_mebibyte() {
+        let valid = format!("version: 1\n#{}", " ".repeat(MAX_CONFIG_BYTES - 12));
+        let within_limit = write_config("yaml", &valid);
+        let path = write_config("yaml", &" ".repeat(MAX_CONFIG_BYTES + 1));
+
+        assert!(Config::load(&within_limit).is_ok());
+        assert!(matches!(
+            Config::load(&path),
+            Err(ConfigError::TooLarge {
+                limit: MAX_CONFIG_BYTES,
+                ..
+            })
+        ));
+        fs::remove_file(within_limit).unwrap();
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn from_parts_rejects_catalog_entries_for_missing_agents() {
+        let missing = AgentName::new("missing").unwrap();
+        let entry = KeyEntry::new(
+            KeyAlias::new("deploy").unwrap(),
+            Fingerprint::from_str(FINGERPRINT).unwrap(),
+            missing,
+            [ScopePath::from_str("company/production").unwrap()],
+            BTreeMap::new(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            Config::from_parts(BTreeMap::new(), KeyCatalog::from_entries([entry]).unwrap()),
+            Err(ConfigError::UnknownAgent(_))
+        ));
+    }
+
+    #[test]
+    fn from_parts_rejects_mismatched_agent_keys() {
+        let key = AgentName::new("primary").unwrap();
+        let definition =
+            AgentDefinition::new(AgentName::new("secondary").unwrap(), "/tmp/agent.sock").unwrap();
+
+        assert!(matches!(
+            Config::from_parts(BTreeMap::from([(key, definition)]), KeyCatalog::default()),
+            Err(ConfigError::Validation(_))
+        ));
     }
 
     #[test]

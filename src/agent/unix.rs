@@ -164,4 +164,12 @@ mod tests {
         let mut bytes = Cursor::new(0_u32.to_be_bytes().to_vec());
         assert!(read_frame(&mut bytes).is_err());
     }
+
+    #[test]
+    fn rejects_oversized_and_truncated_frames() {
+        let mut oversized = Cursor::new(((256 * 1024 + 1) as u32).to_be_bytes().to_vec());
+        assert!(read_frame(&mut oversized).is_err());
+        let mut truncated = Cursor::new([0, 0, 0, 2, 11].to_vec());
+        assert!(read_frame(&mut truncated).is_err());
+    }
 }

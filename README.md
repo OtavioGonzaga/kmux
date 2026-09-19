@@ -8,7 +8,7 @@ The project is Linux-only and pre-release. Validate its behavior with your upstr
 
 ## Configuration
 
-Use `--config`, `KMUX_CONFIG`, or `$XDG_CONFIG_HOME/kmux/config.yaml`. YAML, JSON, and TOML use the same schema.
+Use `--config`, `KMUX_CONFIG`, or one of `$XDG_CONFIG_HOME/kmux/config.yaml`, `config.yml`, `config.json`, or `config.toml`. YAML, JSON, and TOML use the same schema. Configuration files are limited to 1 MiB; YAML accepts anchors and aliases, but rejects duplicate keys and multiple documents.
 
 ```yaml
 version: 1
