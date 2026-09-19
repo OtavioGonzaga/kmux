@@ -1,0 +1,233 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: SemVer without a v prefix or build metadata
+        required: true
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  preflight:
+    needs: ci
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      release_ref: ${{ steps.release.outputs.release_ref }}
+      existing: ${{ steps.release.outputs.existing }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: release
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+\.)*[0-9A-Za-z-]+)?$ ]]
+          test "$GITHUB_REF" = "refs/heads/main"
+          git fetch origin main --tags
+          test "$GITHUB_SHA" = "$(git rev-parse origin/main)"
+          tag="v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            test "$(git cat-file -t "refs/tags/$tag")" = tag
+            test "$(git log -1 --format=%s "$tag")" = "chore(release): $tag"
+            git checkout --detach "$tag"
+            test "$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["package"]["version"])')" = "$VERSION"
+            grep -Fq "## [$VERSION]" CHANGELOG.md
+            git merge-base --is-ancestor "$tag" origin/main
+            echo "release_ref=$tag" >> "$GITHUB_OUTPUT"
+            echo "existing=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "release_ref=$tag" >> "$GITHUB_OUTPUT"
+            echo "existing=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  prepare:
+    needs: preflight
+    if: needs.preflight.outputs.existing == 'false'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      release_ref: ${{ steps.tag.outputs.release_ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git fetch origin main --tags
+          test "$GITHUB_SHA" = "$(git rev-parse origin/main)"
+          bash scripts/prepare-release.sh "$VERSION"
+          changed="$(git diff --name-only)"
+          test -n "$changed"
+          test "$(printf '%s\n' "$changed" | grep -Ev '^(Cargo\.toml|Cargo\.lock|CHANGELOG\.md)$' || true)" = ""
+          cargo check --locked
+          cargo test --all-targets
+          cargo publish --dry-run --locked
+      - id: tag
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git commit -am "chore(release): v$VERSION"
+          git tag --annotate "v$VERSION" --message "Release v$VERSION"
+          git fetch origin main
+          test "$(git rev-parse HEAD^)" = "$(git rev-parse origin/main)"
+          git push --atomic origin HEAD:main "v$VERSION"
+          echo "release_ref=v$VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: [preflight, prepare]
+    if: always() && !failure() && !cancelled()
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            asset: x86_64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            asset: aarch64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.release_ref || needs.preflight.outputs.release_ref }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: sudo apt-get update && sudo apt-get install --yes musl-tools
+      - run: rustup target add ${{ matrix.target }}
+      - env:
+          VERSION: ${{ inputs.version }}
+          TARGET: ${{ matrix.target }}
+          ASSET: ${{ matrix.asset }}
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target "$TARGET"
+          mkdir dist
+          install -m 755 "target/$TARGET/release/kmux" dist/kmux
+          test "$(dist/kmux --version)" = "kmux $VERSION"
+          dist/kmux --help >/dev/null
+          file dist/kmux
+          ldd dist/kmux || true
+          tar -czf "kmux-linux-$ASSET.tar.gz" -C dist kmux -C .. LICENSE README.md CHANGELOG.md
+          sha256sum "kmux-linux-$ASSET.tar.gz" > "kmux-linux-$ASSET.tar.gz.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kmux-linux-${{ matrix.asset }}
+          path: |
+            dist/kmux
+            kmux-linux-${{ matrix.asset }}.tar.gz
+            kmux-linux-${{ matrix.asset }}.tar.gz.sha256
+
+  deb:
+    needs: build
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            asset: x86_64
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            asset: aarch64
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.preflight.outputs.release_ref }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: kmux-linux-${{ matrix.asset }}
+          path: .
+      - env:
+          VERSION: ${{ inputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          go install github.com/goreleaser/nfpm/v2/cmd/nfpm@v2.43.4
+          "$HOME/go/bin/nfpm" package --config packaging/nfpm.yaml --packager deb --target "kmux_${VERSION}_${ARCH}.deb"
+          dpkg-deb --info "kmux_${VERSION}_${ARCH}.deb"
+          dpkg-deb --contents "kmux_${VERSION}_${ARCH}.deb" | grep -Fq ./usr/bin/kmux
+          sudo dpkg -i "kmux_${VERSION}_${ARCH}.deb"
+          test "$(kmux --version)" = "kmux $VERSION"
+          kmux --help >/dev/null
+          sudo dpkg -r kmux
+          sha256sum "kmux_${VERSION}_${ARCH}.deb" > "kmux_${VERSION}_${ARCH}.deb.sha256"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: kmux-deb-${{ matrix.arch }}
+          path: kmux_${{ inputs.version }}_${{ matrix.arch }}.deb*
+
+  publish:
+    needs: [preflight, prepare, deb]
+    if: always() && !failure() && !cancelled()
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.release_ref || needs.preflight.outputs.release_ref }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: kmux-*
+          merge-multiple: true
+      - env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          sha256sum kmux-linux-*.tar.gz kmux_*.deb > SHA256SUMS
+          bash scripts/extract-release-notes.sh "$VERSION" > release-notes.md
+          cat >> release-notes.md <<EOF
+
+          ## Installation
+
+          Cargo: cargo install ssh-kmux --version $VERSION
+
+          Debian/Ubuntu: download the matching `.deb` and run `sudo dpkg -i kmux_${VERSION}_ARCH.deb`.
+
+          Tarball: download `kmux-linux-ARCH.tar.gz` and verify assets with `sha256sum -c SHA256SUMS`.
+          EOF
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" kmux-linux-*.tar.gz kmux-linux-*.sha256 kmux_*.deb kmux_*.deb.sha256 SHA256SUMS --clobber
+          else
+            prerelease=()
+            case "$VERSION" in *-*) prerelease=(--prerelease);; esac
+            gh release create "$tag" kmux-linux-*.tar.gz kmux-linux-*.sha256 kmux_*.deb kmux_*.deb.sha256 SHA256SUMS --draft "${prerelease[@]}" --title "$tag" --notes-file release-notes.md --verify-tag
+          fi
+      - env:
+          VERSION: ${{ inputs.version }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          set -euo pipefail
+          if curl --fail --silent --show-error "https://crates.io/api/v1/crates/ssh-kmux/$VERSION" >/dev/null; then
+            echo "ssh-kmux $VERSION is already published"
+          else
+            cargo publish --locked
+          fi
+      - env:
+          VERSION: ${{ inputs.version }}
+        run: gh release edit "v$VERSION" --draft=false

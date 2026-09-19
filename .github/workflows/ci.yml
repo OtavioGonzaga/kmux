@@ -5,19 +5,39 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_call:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-targets
+      - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
+      - run: cargo publish --dry-run --locked
   msrv:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.89.0
-      - run: cargo check --locked
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install 1.89.0 --profile minimal
+      - run: cargo +1.89.0 check --locked
+  audit:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions-rust-lang/audit@72c09e02f132669d52284a3323acdb503cfc1a24 # v1.2.7

@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser)]
+#[command(name = "kmux", version)]
 pub struct Cli {
     #[arg(long)]
     pub config: Option<PathBuf>,

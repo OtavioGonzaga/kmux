@@ -82,6 +82,19 @@ fn exec_forwards_sigint_and_sigterm_to_the_direct_child() {
     }
 }
 
+#[test]
+fn version_uses_the_binary_name_and_package_version() {
+    let output = Command::new(env!("CARGO_BIN_EXE_kmux"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("kmux {}\n", env!("CARGO_PKG_VERSION"))
+    );
+}
+
 fn write_frame(stream: &mut impl Write, payload: &[u8]) {
     stream
         .write_all(&(payload.len() as u32).to_be_bytes())

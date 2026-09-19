@@ -355,7 +355,9 @@ mod tests {
     use std::collections::BTreeMap;
     use std::fs;
     use std::str::FromStr;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEMPORARY_PATH_ID: AtomicU64 = AtomicU64::new(0);
 
     const FINGERPRINT: &str = "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y";
 
@@ -375,21 +377,19 @@ mod tests {
     }
 
     fn write_config(extension: &str, content: &str) -> std::path::PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("kmux-config-{unique}.{extension}"));
+        let unique = TEMPORARY_PATH_ID.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "kmux-config-{}-{unique}.{extension}",
+            std::process::id()
+        ));
         fs::write(&path, content).unwrap();
         path
     }
 
     fn temporary_directory() -> std::path::PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("kmux-config-{unique}"));
+        let unique = TEMPORARY_PATH_ID.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("kmux-config-{}-{unique}", std::process::id()));
         fs::create_dir(&path).unwrap();
         path
     }

@@ -2,6 +2,33 @@
 
 `kmux` runs one command with a filtered view of an existing SSH agent. It never reads, exports, or persists private keys.
 
+## Installation
+
+### Cargo
+
+```bash
+cargo install ssh-kmux
+kmux --version
+```
+
+### Debian/Ubuntu
+
+Download the architecture-appropriate `.deb` from the GitHub Release, then install it:
+
+```bash
+sudo dpkg -i kmux_<version>_amd64.deb
+```
+
+### Direct Download
+
+GitHub Releases provide `kmux-linux-x86_64.tar.gz` and `kmux-linux-aarch64.tar.gz`.
+
+```bash
+curl -LO https://github.com/OtavioGonzaga/kmux/releases/latest/download/kmux-linux-x86_64.tar.gz
+tar -xzf kmux-linux-x86_64.tar.gz
+./kmux --version
+```
+
 ## Status
 
 The project is Linux-only and pre-release. Validate its behavior with your upstream agent before relying on it for production access.
@@ -50,3 +77,7 @@ kmux --config config.yaml exec company/production -- ssh deploy@example.com
 ## Limitations
 
 Agent forwarding and `session-bind` require upstream-agent support. The automated OpenSSH coverage verifies `ssh-add -L` and `ssh-add -T`; full `ssh -A` forwarding remains a manual integration check. To verify it against a host that accepts forwarding, run `kmux exec <scope> -- ssh -A <host> ssh-add -L` and confirm only the selected public key is listed. Bitwarden and other upstream integrations must be validated manually before production use.
+
+## License
+
+MIT
