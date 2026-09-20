@@ -292,6 +292,12 @@ impl ConfigStore {
             ConfigFormat::Json => serde_json::to_string_pretty(document)
                 .map_err(|error| ConfigError::Serialize(error.to_string()))?,
         };
+        if output.len() > MAX_CONFIG_BYTES {
+            return Err(ConfigError::TooLarge {
+                path: path.to_owned(),
+                limit: MAX_CONFIG_BYTES,
+            });
+        }
         let parent = path.parent().ok_or_else(|| ConfigError::Write {
             path: path.to_owned(),
             source: io::Error::new(
@@ -439,7 +445,7 @@ impl fmt::Display for ConfigError {
                 "duplicate agent name '{agent}' after normalization"
             ),
             Self::UnknownAgent(agent) => {
-                write!(formatter, "key references unknown agent '{agent}'")
+                write!(formatter, "unknown agent '{agent}'")
             }
             Self::AgentInUse(agent, aliases) => write!(
                 formatter,
@@ -576,7 +582,7 @@ struct KeyDocument {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentDocument, AgentKind, Config, ConfigDocument, ConfigError, ConfigStore,
+        AgentDocument, AgentKind, Config, ConfigDocument, ConfigError, ConfigStore, KeyDocument,
         MAX_CONFIG_BYTES, MAX_YAML_ALIASES, SUPPORTED_VERSION,
     };
     use crate::agent::{AgentDefinition, AgentName};
@@ -829,6 +835,46 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
+    fn populated_document() -> ConfigDocument {
+        ConfigDocument {
+            version: SUPPORTED_VERSION,
+            agents: BTreeMap::from([(
+                "work".to_owned(),
+                AgentDocument {
+                    kind: AgentKind::Unix,
+                    socket: "/tmp/work.sock".into(),
+                },
+            )]),
+            keys: BTreeMap::from([(
+                "deploy".to_owned(),
+                KeyDocument {
+                    fingerprint: FINGERPRINT.to_owned(),
+                    agent: "work".to_owned(),
+                    scopes: vec!["company/production".to_owned()],
+                    tags: BTreeMap::from([("provider".to_owned(), "aws".to_owned())]),
+                },
+            )]),
+        }
+    }
+
+    #[test]
+    fn store_round_trips_populated_documents_in_every_supported_format() {
+        let directory = temporary_directory();
+        for extension in ["toml", "yaml", "yml", "json"] {
+            let path = directory.join(format!("config.{extension}"));
+            ConfigStore::save(&path, &populated_document()).unwrap();
+            let config = ConfigStore::load(&path).unwrap().validate().unwrap();
+            assert_eq!(config.agents().len(), 1);
+            let entry = config.catalog().entries().next().unwrap();
+            assert_eq!(entry.scopes().len(), 1);
+            assert_eq!(
+                entry.tags().get("provider").map(String::as_str),
+                Some("aws")
+            );
+        }
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     fn store_preserves_existing_file_when_document_validation_fails() {
         let directory = temporary_directory();
@@ -862,6 +908,27 @@ mod tests {
         assert!(
             ConfigStore::save(&directory.join("config.ini"), &ConfigDocument::empty()).is_err()
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn store_rejects_oversized_serialized_documents_without_touching_the_target() {
+        let directory = temporary_directory();
+        let path = directory.join("config.toml");
+        let original = "version = 1\n";
+        fs::write(&path, original).unwrap();
+        let mut document = populated_document();
+        document
+            .keys
+            .get_mut("deploy")
+            .unwrap()
+            .tags
+            .insert("note".to_owned(), "x".repeat(MAX_CONFIG_BYTES));
+        assert!(matches!(
+            ConfigStore::save(&path, &document),
+            Err(ConfigError::TooLarge { .. })
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
         fs::remove_dir_all(directory).unwrap();
     }
 }

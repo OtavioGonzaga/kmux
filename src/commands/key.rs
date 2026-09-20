@@ -42,15 +42,21 @@ pub fn remove(
     alias: String,
     yes: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    remove_with(path, alias, yes, &TerminalConfirmation)
+}
+
+fn remove_with(
+    path: &ConfigPath,
+    alias: String,
+    yes: bool,
+    confirmation: &dyn KeyRemovalConfirmation,
+) -> Result<(), Box<dyn std::error::Error>> {
     let alias = KeyAlias::new(alias)?;
     if !yes {
-        if !stdin().is_terminal() {
+        if !confirmation.is_terminal() {
             return Err("refusing to remove a key without --yes outside a terminal".into());
         }
-        let confirmed = inquire::Confirm::new(&format!("Remove key '{alias}'?"))
-            .with_default(false)
-            .prompt()?;
-        if !confirmed {
+        if !confirmation.confirm(&alias)? {
             return Ok(());
         }
     }
@@ -58,6 +64,25 @@ pub fn remove(
     document.remove_key(&alias)?;
     ConfigStore::save(path.as_path(), &document)?;
     Ok(())
+}
+
+trait KeyRemovalConfirmation {
+    fn is_terminal(&self) -> bool;
+    fn confirm(&self, alias: &KeyAlias) -> Result<bool, Box<dyn std::error::Error>>;
+}
+
+struct TerminalConfirmation;
+
+impl KeyRemovalConfirmation for TerminalConfirmation {
+    fn is_terminal(&self) -> bool {
+        stdin().is_terminal()
+    }
+
+    fn confirm(&self, alias: &KeyAlias) -> Result<bool, Box<dyn std::error::Error>> {
+        Ok(inquire::Confirm::new(&format!("Remove key '{alias}'?"))
+            .with_default(false)
+            .prompt()?)
+    }
 }
 
 fn entry(
@@ -215,7 +240,9 @@ impl std::fmt::Display for IdentityOption {
 
 #[cfg(test)]
 mod tests {
-    use super::{KeyPrompter, add, interactive_entry_with, remove};
+    use super::{
+        KeyPrompter, KeyRemovalConfirmation, add, interactive_entry_with, remove, remove_with,
+    };
     use kmux::agent::AgentName;
     use kmux::catalog::{Fingerprint, Identity, KeyAlias};
     use kmux::config::{Config, ConfigDocument, ConfigStore};
@@ -252,6 +279,23 @@ mod tests {
             )
             .is_err()
         );
+        for (agent, fingerprint, scopes, tags) in [
+            (None, Some(FINGERPRINT.to_owned()), vec![], vec![]),
+            (None, None, vec!["company".to_owned()], vec![]),
+            (None, None, vec![], vec!["provider=aws".to_owned()]),
+        ] {
+            assert!(
+                add(
+                    &config,
+                    "incomplete".to_owned(),
+                    agent,
+                    fingerprint,
+                    scopes,
+                    tags
+                )
+                .is_err()
+            );
+        }
         add(
             &config,
             "deploy".to_owned(),
@@ -279,6 +323,39 @@ mod tests {
             )
             .is_err()
         );
+        assert!(
+            add(
+                &config,
+                "unknown-agent".to_owned(),
+                Some("missing".to_owned()),
+                Some("SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+A".to_owned()),
+                vec![],
+                vec![],
+            )
+            .is_err()
+        );
+        assert!(
+            add(
+                &config,
+                "bad-fingerprint".to_owned(),
+                Some("work".to_owned()),
+                Some("SHA256:not-a-fingerprint".to_owned()),
+                vec![],
+                vec![],
+            )
+            .is_err()
+        );
+        assert!(
+            add(
+                &config,
+                "duplicate-tag".to_owned(),
+                Some("work".to_owned()),
+                Some("SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+A".to_owned()),
+                vec![],
+                vec!["provider=aws".to_owned(), "provider=gcp".to_owned()],
+            )
+            .is_err()
+        );
         remove(&config, "deploy".to_owned(), true).unwrap();
         assert!(
             ConfigStore::load(&path)
@@ -294,6 +371,21 @@ mod tests {
     }
 
     struct FakePrompter;
+
+    struct FakeConfirmation {
+        terminal: bool,
+        confirmed: bool,
+    }
+
+    impl KeyRemovalConfirmation for FakeConfirmation {
+        fn is_terminal(&self) -> bool {
+            self.terminal
+        }
+
+        fn confirm(&self, _: &KeyAlias) -> Result<bool, Box<dyn std::error::Error>> {
+            Ok(self.confirmed)
+        }
+    }
 
     impl KeyPrompter for FakePrompter {
         fn select_agent(
@@ -352,5 +444,60 @@ mod tests {
             entry.tags().get("provider").map(String::as_str),
             Some("aws")
         );
+    }
+
+    #[test]
+    fn key_removal_requires_confirmation_unless_yes_is_provided() {
+        let path = path("confirmation");
+        let mut document = ConfigDocument::empty();
+        document
+            .add_agent(AgentName::new("work").unwrap(), "/tmp/work.sock".into())
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+        let config = Config::discover(Some(&path)).unwrap();
+        add(
+            &config,
+            "deploy".to_owned(),
+            Some("work".to_owned()),
+            Some(FINGERPRINT.to_owned()),
+            vec![],
+            vec![],
+        )
+        .unwrap();
+        assert!(
+            remove_with(
+                &config,
+                "deploy".to_owned(),
+                false,
+                &FakeConfirmation {
+                    terminal: false,
+                    confirmed: true,
+                },
+            )
+            .is_err()
+        );
+        remove_with(
+            &config,
+            "deploy".to_owned(),
+            false,
+            &FakeConfirmation {
+                terminal: true,
+                confirmed: false,
+            },
+        )
+        .unwrap();
+        assert!(
+            ConfigStore::load(&path)
+                .unwrap()
+                .validate()
+                .unwrap()
+                .catalog()
+                .entries()
+                .next()
+                .is_some()
+        );
+        remove(&config, "deploy".to_owned(), true).unwrap();
+        assert!(remove(&config, "missing".to_owned(), true).is_err());
+        fs::remove_file(path).unwrap();
     }
 }

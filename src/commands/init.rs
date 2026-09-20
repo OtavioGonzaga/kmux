@@ -50,8 +50,7 @@ pub fn initialize(
             println!("kmux already initialized at {}", path.display());
             return Ok(());
         }
-        let document = ConfigStore::load(&path)?;
-        ConfigStore::save(&path, &document)?;
+        ConfigStore::save(&path, &ConfigDocument::empty())?;
         println!("reinitialized kmux at {}", path.display());
         return Ok(());
     }
@@ -91,6 +90,11 @@ mod tests {
         let original = fs::read_to_string(&path).unwrap();
         initialize(Some(&path), None, false).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        fs::write(
+            &path,
+            "version = 1\n[agents.work]\ntype = \"unix\"\nsocket = \"/tmp/work.sock\"\n",
+        )
+        .unwrap();
         initialize(Some(&path), None, true).unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
         fs::remove_file(path).unwrap();
@@ -100,5 +104,19 @@ mod tests {
     fn rejects_a_format_that_conflicts_with_the_target_path() {
         let path = path("format-conflict");
         assert!(initialize(Some(&path), Some(OutputFormat::Yaml), false).is_err());
+    }
+
+    #[test]
+    fn force_recovers_an_invalid_existing_configuration() {
+        let path = path("recover-invalid");
+        fs::write(&path, "this is not valid TOML = [").unwrap();
+        initialize(Some(&path), None, true).unwrap();
+        assert!(
+            kmux::config::ConfigStore::load(&path)
+                .unwrap()
+                .validate()
+                .is_ok()
+        );
+        fs::remove_file(path).unwrap();
     }
 }
