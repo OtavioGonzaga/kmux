@@ -1,9 +1,14 @@
+mod agent;
 mod diagnostics;
 mod exec;
 mod import;
+mod init;
+mod key;
 mod list;
 
-use crate::cli::{Cli, Command, ConfigCommand, FilterArgs, ImportCommand};
+use crate::cli::{
+    AgentCommand, Cli, Command, ConfigCommand, FilterArgs, ImportCommand, KeyCommand,
+};
 use kmux::catalog::KeyQuery;
 use kmux::config::Config;
 
@@ -14,7 +19,45 @@ pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
                 .into(),
         );
     }
+    if let Some(Command::Init { format, force }) = &cli.command {
+        init::initialize(cli.config.as_deref(), format.clone(), *force)?;
+        return Ok(0);
+    }
     let path = Config::discover(cli.config.as_deref())?;
+    match cli.command {
+        Some(Command::Agent {
+            command: AgentCommand::Add { name, socket },
+        }) => {
+            agent::add(&path, name, socket)?;
+            return Ok(0);
+        }
+        Some(Command::Agent {
+            command: AgentCommand::Remove { name },
+        }) => {
+            agent::remove(&path, name)?;
+            return Ok(0);
+        }
+        Some(Command::Key {
+            command:
+                KeyCommand::Add {
+                    alias,
+                    agent,
+                    fingerprint,
+                    scopes,
+                    tags,
+                },
+        }) => {
+            key::add(&path, alias, agent, fingerprint, scopes, tags)?;
+            return Ok(0);
+        }
+        Some(Command::Key {
+            command: KeyCommand::Remove { alias, yes },
+        }) => {
+            key::remove(&path, alias, yes)?;
+            return Ok(0);
+        }
+        _ => {}
+    }
     let config = Config::load(path.as_path())?;
     match cli.command {
         Some(Command::Exec { filters, command }) => {
@@ -34,6 +77,9 @@ pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
         Some(Command::Keys) => list::print_keys(&config),
         Some(Command::Scopes) => list::print_scopes(&config),
         Some(Command::Doctor) => diagnostics::doctor(&config)?,
+        Some(Command::Init { .. } | Command::Agent { .. } | Command::Key { .. }) => {
+            unreachable!("mutating commands return before loading configuration")
+        }
         None if !cli.child_command.is_empty() => {
             return exec::execute(&config, key_query(cli.filters)?, cli.child_command);
         }

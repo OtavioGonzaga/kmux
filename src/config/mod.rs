@@ -1,3 +1,3 @@
 mod schema;
 
-pub use schema::{Config, ConfigError, ConfigPath};
+pub use schema::{Config, ConfigDocument, ConfigError, ConfigFormat, ConfigPath, ConfigStore};

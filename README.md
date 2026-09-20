@@ -57,11 +57,16 @@ kmux --config config.toml config check
 kmux --config config.toml doctor
 kmux --config config.toml keys
 kmux --config config.toml scopes
+kmux init
+kmux agent add primary --socket /run/user/1000/ssh-agent.sock
+kmux key add company-production --agent primary --fingerprint SHA256:replace-with-public-fingerprint --scope company/production
 kmux --config config.toml import agent primary --scope company/production
 kmux --config config.toml -s company/production ssh deploy@example.com
 ```
 
 `scopes` lists configured scopes and their derived ancestors, in sorted order. `import agent` emits a configuration snippet only; it derives readable, deterministic aliases from public agent comments and never changes the configuration file.
+
+`kmux init` creates a minimal TOML configuration by default and is idempotent when a supported configuration already exists. `agent add` and `key add` validate the complete configuration before replacing it atomically. Run `key add ALIAS` without data flags to choose a configured agent and public identity interactively; supplying any key data flag requires both `--agent` and `--fingerprint` and never prompts.
 
 `kmux [FILTERS] [--] COMMAND...` creates a private, per-execution temporary directory for its Unix socket, passes it to the child only through `SSH_AUTH_SOCK`, and removes it after the child exits. The `--` separator is optional. Without filters, it considers every configured key. A parent scope matches keys declared in that scope and descendant scopes; a child scope does not implicitly select ancestor keys. When more than one key matches, `kmux` selects through the controlling terminal when one is available (including when command output is piped); otherwise it reports the candidate list. The child exit code is preserved. `kmux exec -s company/production [--] COMMAND...` remains available as the explicit form.
 

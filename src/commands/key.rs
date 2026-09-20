@@ -1,0 +1,356 @@
+use kmux::agent::{AgentName, UnixSocketAgent, UpstreamAgent};
+use kmux::catalog::{Fingerprint, Identity, KeyAlias, KeyEntry};
+use kmux::config::{ConfigPath, ConfigStore};
+use kmux::scope::ScopePath;
+use std::collections::BTreeMap;
+use std::io::{IsTerminal, stdin};
+use std::str::FromStr;
+
+pub fn add(
+    path: &ConfigPath,
+    alias: String,
+    agent: Option<String>,
+    fingerprint: Option<String>,
+    scopes: Vec<String>,
+    tags: Vec<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let alias = KeyAlias::new(alias)?;
+    let has_flags =
+        agent.is_some() || fingerprint.is_some() || !scopes.is_empty() || !tags.is_empty();
+    let mut document = ConfigStore::load(path.as_path())?;
+    let entry = if has_flags {
+        let agent =
+            agent.ok_or("missing required --agent when using non-interactive key creation")?;
+        let fingerprint = fingerprint
+            .ok_or("missing required --fingerprint when using non-interactive key creation")?;
+        entry(alias, agent, fingerprint, scopes, tags)?
+    } else {
+        interactive_entry_with(
+            &document.validate()?,
+            alias,
+            &InquireKeyPrompter,
+            |definition| UnixSocketAgent::new(definition.socket().to_owned()).identities(),
+        )?
+    };
+    document.add_key(entry)?;
+    ConfigStore::save(path.as_path(), &document)?;
+    Ok(())
+}
+
+pub fn remove(
+    path: &ConfigPath,
+    alias: String,
+    yes: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let alias = KeyAlias::new(alias)?;
+    if !yes {
+        if !stdin().is_terminal() {
+            return Err("refusing to remove a key without --yes outside a terminal".into());
+        }
+        let confirmed = inquire::Confirm::new(&format!("Remove key '{alias}'?"))
+            .with_default(false)
+            .prompt()?;
+        if !confirmed {
+            return Ok(());
+        }
+    }
+    let mut document = ConfigStore::load(path.as_path())?;
+    document.remove_key(&alias)?;
+    ConfigStore::save(path.as_path(), &document)?;
+    Ok(())
+}
+
+fn entry(
+    alias: KeyAlias,
+    agent: String,
+    fingerprint: String,
+    scopes: Vec<String>,
+    tags: Vec<String>,
+) -> Result<KeyEntry, Box<dyn std::error::Error>> {
+    let agent = AgentName::new(agent)?;
+    let fingerprint = Fingerprint::from_str(&fingerprint)?;
+    let scopes = scopes
+        .into_iter()
+        .map(|scope| ScopePath::from_str(&scope))
+        .collect::<Result<Vec<_>, _>>()?;
+    let tags = parse_tags(tags)?;
+    Ok(KeyEntry::new(alias, fingerprint, agent, scopes, tags))
+}
+
+fn interactive_entry_with(
+    config: &kmux::config::Config,
+    alias: KeyAlias,
+    prompter: &dyn KeyPrompter,
+    identities: impl FnOnce(
+        &kmux::agent::AgentDefinition,
+    ) -> Result<Vec<Identity>, kmux::agent::AgentError>,
+) -> Result<KeyEntry, Box<dyn std::error::Error>> {
+    let names = config.agents().keys().cloned().collect::<Vec<_>>();
+    let agent = prompter.select_agent(&names)?;
+    let definition = config.agents().get(&agent).expect("selected agent exists");
+    let identity = prompter.select_identity(&identities(definition)?)?;
+    let scopes = split_values(prompter.scopes()?);
+    let tags = split_values(prompter.tags()?);
+    if !prompter.confirm(&alias, &agent, &identity)? {
+        return Err("key creation cancelled".into());
+    }
+    entry(
+        alias,
+        agent.to_string(),
+        identity.fingerprint.to_string(),
+        scopes,
+        tags,
+    )
+}
+
+fn split_values(value: String) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+trait KeyPrompter {
+    fn select_agent(&self, agents: &[AgentName]) -> Result<AgentName, Box<dyn std::error::Error>>;
+    fn select_identity(
+        &self,
+        identities: &[Identity],
+    ) -> Result<Identity, Box<dyn std::error::Error>>;
+    fn scopes(&self) -> Result<String, Box<dyn std::error::Error>>;
+    fn tags(&self) -> Result<String, Box<dyn std::error::Error>>;
+    fn confirm(
+        &self,
+        alias: &KeyAlias,
+        agent: &AgentName,
+        identity: &Identity,
+    ) -> Result<bool, Box<dyn std::error::Error>>;
+}
+
+struct InquireKeyPrompter;
+
+impl KeyPrompter for InquireKeyPrompter {
+    fn select_agent(&self, agents: &[AgentName]) -> Result<AgentName, Box<dyn std::error::Error>> {
+        match agents {
+            [] => Err("no configured agents are available".into()),
+            [agent] => Ok(agent.clone()),
+            _ => Ok(inquire::Select::new("Select agent", agents.to_vec()).prompt()?),
+        }
+    }
+
+    fn select_identity(
+        &self,
+        identities: &[Identity],
+    ) -> Result<Identity, Box<dyn std::error::Error>> {
+        if identities.is_empty() {
+            return Err("the selected agent has no public identities".into());
+        }
+        Ok(inquire::Select::new(
+            "Select identity",
+            identities.iter().cloned().map(IdentityOption).collect(),
+        )
+        .prompt()?
+        .0)
+    }
+
+    fn scopes(&self) -> Result<String, Box<dyn std::error::Error>> {
+        Ok(inquire::Text::new("Scopes (comma-separated, optional)")
+            .prompt_skippable()?
+            .unwrap_or_default())
+    }
+
+    fn tags(&self) -> Result<String, Box<dyn std::error::Error>> {
+        Ok(
+            inquire::Text::new("Tags (comma-separated KEY=VALUE, optional)")
+                .prompt_skippable()?
+                .unwrap_or_default(),
+        )
+    }
+
+    fn confirm(
+        &self,
+        alias: &KeyAlias,
+        agent: &AgentName,
+        identity: &Identity,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        Ok(inquire::Confirm::new(&format!(
+            "Add key '{alias}' using {} from agent '{agent}'?",
+            identity.fingerprint
+        ))
+        .with_default(true)
+        .prompt()?)
+    }
+}
+
+fn parse_tags(tags: Vec<String>) -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
+    let mut parsed = BTreeMap::new();
+    for tag in tags {
+        let Some((name, value)) = tag.split_once('=') else {
+            return Err(format!("tags must use non-empty KEY=VALUE syntax: '{tag}'").into());
+        };
+        if name.is_empty()
+            || value.is_empty()
+            || parsed.insert(name.to_owned(), value.to_owned()).is_some()
+        {
+            return Err(format!("tags must use unique non-empty KEY=VALUE syntax: '{tag}'").into());
+        }
+    }
+    Ok(parsed)
+}
+
+struct IdentityOption(Identity);
+
+impl std::fmt::Display for IdentityOption {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let comment = self.0.comment.as_deref().unwrap_or("no comment");
+        write!(
+            formatter,
+            "{} - {}",
+            self.0.fingerprint,
+            comment.replace(|character: char| character.is_control(), " ")
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{KeyPrompter, add, interactive_entry_with, remove};
+    use kmux::agent::AgentName;
+    use kmux::catalog::{Fingerprint, Identity, KeyAlias};
+    use kmux::config::{Config, ConfigDocument, ConfigStore};
+    use std::fs;
+    use std::str::FromStr;
+
+    const FINGERPRINT: &str = "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y";
+
+    fn path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "kmux-key-command-{}-{name}.toml",
+            std::process::id()
+        ))
+    }
+
+    #[test]
+    fn flag_mode_requires_complete_key_data_and_persists_multiple_scopes() {
+        let path = path("flags");
+        let mut document = ConfigDocument::empty();
+        document
+            .add_agent(AgentName::new("work").unwrap(), "/tmp/work.sock".into())
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+        let config = Config::discover(Some(&path)).unwrap();
+
+        assert!(
+            add(
+                &config,
+                "deploy".to_owned(),
+                Some("work".to_owned()),
+                None,
+                vec![],
+                vec![],
+            )
+            .is_err()
+        );
+        add(
+            &config,
+            "deploy".to_owned(),
+            Some("work".to_owned()),
+            Some(FINGERPRINT.to_owned()),
+            vec!["company/production".to_owned(), "company/backup".to_owned()],
+            vec!["provider=aws".to_owned()],
+        )
+        .unwrap();
+        let loaded = ConfigStore::load(&path).unwrap().validate().unwrap();
+        let entry = loaded.catalog().entries().next().unwrap();
+        assert_eq!(entry.scopes().len(), 2);
+        assert_eq!(
+            entry.tags().get("provider").map(String::as_str),
+            Some("aws")
+        );
+        assert!(
+            add(
+                &config,
+                "other".to_owned(),
+                Some("work".to_owned()),
+                Some(FINGERPRINT.to_owned()),
+                vec![],
+                vec![],
+            )
+            .is_err()
+        );
+        remove(&config, "deploy".to_owned(), true).unwrap();
+        assert!(
+            ConfigStore::load(&path)
+                .unwrap()
+                .validate()
+                .unwrap()
+                .catalog()
+                .entries()
+                .next()
+                .is_none()
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    struct FakePrompter;
+
+    impl KeyPrompter for FakePrompter {
+        fn select_agent(
+            &self,
+            agents: &[AgentName],
+        ) -> Result<AgentName, Box<dyn std::error::Error>> {
+            Ok(agents[0].clone())
+        }
+
+        fn select_identity(
+            &self,
+            identities: &[Identity],
+        ) -> Result<Identity, Box<dyn std::error::Error>> {
+            Ok(identities[0].clone())
+        }
+
+        fn scopes(&self) -> Result<String, Box<dyn std::error::Error>> {
+            Ok("company/production,company/backup".to_owned())
+        }
+
+        fn tags(&self) -> Result<String, Box<dyn std::error::Error>> {
+            Ok("provider=aws".to_owned())
+        }
+
+        fn confirm(
+            &self,
+            _: &KeyAlias,
+            _: &AgentName,
+            _: &Identity,
+        ) -> Result<bool, Box<dyn std::error::Error>> {
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn interactive_key_creation_uses_public_identities_from_an_injected_source() {
+        let mut document = ConfigDocument::empty();
+        document
+            .add_agent(AgentName::new("work").unwrap(), "/tmp/work.sock".into())
+            .unwrap();
+        let identity = Identity {
+            key_blob: vec![1, 2, 3],
+            fingerprint: Fingerprint::from_str(FINGERPRINT).unwrap(),
+            comment: Some("deploy key".to_owned()),
+        };
+        let entry = interactive_entry_with(
+            &document.validate().unwrap(),
+            KeyAlias::new("deploy").unwrap(),
+            &FakePrompter,
+            |_| Ok(vec![identity.clone()]),
+        )
+        .unwrap();
+        assert_eq!(entry.fingerprint().as_str(), FINGERPRINT);
+        assert_eq!(entry.scopes().len(), 2);
+        assert_eq!(
+            entry.tags().get("provider").map(String::as_str),
+            Some("aws")
+        );
+    }
+}
