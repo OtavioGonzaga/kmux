@@ -85,7 +85,8 @@ pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
     let config = Config::load(path.as_path())?;
     match cli.command {
         Some(Command::Exec { filters, command }) => {
-            return exec::execute(&config, key_query(filters)?, command);
+            let has_filters = !filters.is_empty();
+            return exec::execute(&config, key_query(filters)?, has_filters, command);
         }
         Some(Command::Import { .. }) => unreachable!("import returns before loading configuration"),
         Some(Command::Config {
@@ -98,7 +99,13 @@ pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
             unreachable!("mutating commands return before loading configuration")
         }
         None if !cli.child_command.is_empty() => {
-            return exec::execute(&config, key_query(cli.filters)?, cli.child_command);
+            let has_filters = !cli.filters.is_empty();
+            return exec::execute(
+                &config,
+                key_query(cli.filters)?,
+                has_filters,
+                cli.child_command,
+            );
         }
         None => return Err("a child command is required".into()),
     }

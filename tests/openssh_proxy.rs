@@ -62,32 +62,42 @@ fn openssh_agent_identities_are_filtered_by_the_proxy() {
         .unwrap();
     wait_for_socket(&upstream_socket);
 
-    let key = dir.0.join("id_ed25519");
-    assert!(
-        Command::new("ssh-keygen")
-            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
-            .arg(&key)
-            .status()
-            .unwrap()
-            .success()
-    );
-    assert!(
-        Command::new("ssh-add")
-            .arg(&key)
-            .env("SSH_AUTH_SOCK", &upstream_socket)
-            .status()
-            .unwrap()
-            .success()
-    );
+    let allowed_keys = [dir.0.join("allowed-first"), dir.0.join("allowed-second")];
+    let excluded_key = dir.0.join("excluded");
+    for key in allowed_keys.iter().chain(std::iter::once(&excluded_key)) {
+        assert!(
+            Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+                .arg(key)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("ssh-add")
+                .arg(key)
+                .env("SSH_AUTH_SOCK", &upstream_socket)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
 
-    let public_key = std::fs::read_to_string(key.with_extension("pub")).unwrap();
-    let key_blob = base64::engine::general_purpose::STANDARD
-        .decode(public_key.split_whitespace().nth(1).unwrap())
-        .unwrap();
+    let allowed = allowed_keys.map(|key| {
+        let public_key = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+        let key_blob = base64::engine::general_purpose::STANDARD
+            .decode(public_key.split_whitespace().nth(1).unwrap())
+            .unwrap();
+        (key, public_key, key_blob)
+    });
+    let excluded_public = std::fs::read_to_string(excluded_key.with_extension("pub")).unwrap();
     let proxy_socket = dir.0.join("proxy.sock");
     let proxy = ProxyServer::bind(
         &proxy_socket,
-        FilteredAgent::new(UnixSocketAgent::new(&upstream_socket), [key_blob]),
+        FilteredAgent::new(
+            UnixSocketAgent::new(&upstream_socket),
+            allowed.iter().map(|(_, _, blob)| blob.clone()),
+        ),
     )
     .unwrap();
 
@@ -96,9 +106,20 @@ fn openssh_agent_identities_are_filtered_by_the_proxy() {
         .env("SSH_AUTH_SOCK", proxy.path())
         .output()
         .unwrap();
-    let signature_check = Command::new("ssh-add")
+    let signature_checks = allowed
+        .iter()
+        .map(|(key, _, _)| {
+            Command::new("ssh-add")
+                .arg("-T")
+                .arg(key.with_extension("pub"))
+                .env("SSH_AUTH_SOCK", proxy.path())
+                .output()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let excluded_signature_check = Command::new("ssh-add")
         .arg("-T")
-        .arg(key.with_extension("pub"))
+        .arg(excluded_key.with_extension("pub"))
         .env("SSH_AUTH_SOCK", proxy.path())
         .output()
         .unwrap();
@@ -106,11 +127,18 @@ fn openssh_agent_identities_are_filtered_by_the_proxy() {
     stop_agent(&mut agent);
 
     assert!(output.status.success(), "ssh-add failed: {:?}", output);
-    assert!(
-        signature_check.status.success(),
-        "ssh-add signature check failed: {:?}",
-        signature_check
-    );
-    assert_eq!(String::from_utf8(output.stdout).unwrap(), public_key);
+    for signature_check in signature_checks {
+        assert!(
+            signature_check.status.success(),
+            "ssh-add signature check failed: {:?}",
+            signature_check
+        );
+    }
+    assert!(!excluded_signature_check.status.success());
+    let identities = String::from_utf8(output.stdout).unwrap();
+    for (_, public_key, _) in &allowed {
+        assert!(identities.contains(public_key));
+    }
+    assert!(!identities.contains(&excluded_public));
     assert!(!proxy_socket.exists());
 }
