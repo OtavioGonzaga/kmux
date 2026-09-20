@@ -15,6 +15,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Allow configured keys without scopes while preserving filtered SSH-agent isolation.
 - Persist public identities imported by `kmux import agent`, with dry-run and explicit snippet output modes.
 - Allow `kmux keys` to filter configured keys with the same reusable selection filters as command execution.
+- Expand user documentation and public Rust API Rustdocs.
 
 ## [0.1.0] - 2026-09-19
 

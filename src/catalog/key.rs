@@ -1,3 +1,5 @@
+//! Public-key fingerprints and configured catalog entries.
+
 use crate::agent::AgentName;
 use crate::scope::ScopePath;
 use base64::Engine;
@@ -7,9 +9,11 @@ use std::fmt;
 use std::str::FromStr;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// A canonical OpenSSH SHA-256 public-key fingerprint.
 pub struct Fingerprint(String);
 
 impl Fingerprint {
+    /// Computes the canonical fingerprint for an SSH public-key blob.
     pub fn from_public_key_blob(key_blob: &[u8]) -> Self {
         let digest = Sha256::digest(key_blob);
         Self(format!(
@@ -18,6 +22,7 @@ impl Fingerprint {
         ))
     }
 
+    /// Returns the canonical `SHA256:` representation.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -51,8 +56,11 @@ impl fmt::Display for Fingerprint {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A fingerprint parse error.
 pub enum FingerprintError {
+    /// The fingerprint did not use the `SHA256:` prefix.
     UnsupportedFormat,
+    /// The SHA-256 digest was not canonical base64.
     InvalidDigest,
 }
 
@@ -72,16 +80,22 @@ impl fmt::Display for FingerprintError {
 impl std::error::Error for FingerprintError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A public identity returned by an upstream SSH Agent.
 pub struct Identity {
+    /// Raw SSH public-key blob used by the Agent protocol.
     pub key_blob: Vec<u8>,
+    /// Fingerprint derived from `key_blob`.
     pub fingerprint: Fingerprint,
+    /// Optional upstream-provided comment; treat it as untrusted text.
     pub comment: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// A normalized alias for a configured public key.
 pub struct KeyAlias(String);
 
 impl KeyAlias {
+    /// Validates and lowercases a key alias.
     pub fn new(value: impl AsRef<str>) -> Result<Self, KeyAliasError> {
         let value = value.as_ref();
         if !is_name(value) {
@@ -91,6 +105,7 @@ impl KeyAlias {
         Ok(Self(value.to_ascii_lowercase()))
     }
 
+    /// Returns the normalized alias.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -103,7 +118,9 @@ impl fmt::Display for KeyAlias {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A key-alias validation error.
 pub enum KeyAliasError {
+    /// The alias is empty or contains unsupported characters.
     Invalid,
 }
 
@@ -116,6 +133,7 @@ impl fmt::Display for KeyAliasError {
 impl std::error::Error for KeyAliasError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A configured public identity and its local metadata.
 pub struct KeyEntry {
     alias: KeyAlias,
     fingerprint: Fingerprint,
@@ -126,6 +144,7 @@ pub struct KeyEntry {
 }
 
 impl KeyEntry {
+    /// Creates an entry with sorted, deduplicated scopes and no comment.
     pub fn new(
         alias: KeyAlias,
         fingerprint: Fingerprint,
@@ -144,31 +163,38 @@ impl KeyEntry {
         }
     }
 
+    /// Attaches non-empty local comment metadata to this entry.
     pub fn with_comment(mut self, comment: Option<String>) -> Self {
         self.comment = comment.filter(|comment| !comment.is_empty());
         self
     }
 
+    /// Returns the entry alias.
     pub fn alias(&self) -> &KeyAlias {
         &self.alias
     }
 
+    /// Returns the configured public-key fingerprint.
     pub fn fingerprint(&self) -> &Fingerprint {
         &self.fingerprint
     }
 
+    /// Returns the upstream agent responsible for signing.
     pub fn agent(&self) -> &AgentName {
         &self.agent
     }
 
+    /// Returns the configured hierarchical scopes.
     pub fn scopes(&self) -> &BTreeSet<ScopePath> {
         &self.scopes
     }
 
+    /// Returns the local tag metadata.
     pub fn tags(&self) -> &BTreeMap<String, String> {
         &self.tags
     }
 
+    /// Returns the persisted local comment, if one exists.
     pub fn comment(&self) -> Option<&str> {
         self.comment.as_deref()
     }

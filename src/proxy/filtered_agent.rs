@@ -1,3 +1,5 @@
+//! Request filtering and authorization for a single upstream SSH Agent.
+
 use super::ProxyError;
 use super::protocol::{
     EXTENSION, EXTENSION_FAILURE, FAILURE, IDENTITIES_ANSWER, MAX_IDENTITIES, REQUEST_IDENTITIES,
@@ -9,6 +11,7 @@ use std::io;
 use std::os::unix::net::UnixStream;
 
 #[derive(Clone, Debug)]
+/// An SSH Agent proxy policy for a set of allowed public-key blobs.
 pub struct FilteredAgent {
     upstream: UnixSocketAgent,
     allowed_blobs: BTreeSet<Vec<u8>>,

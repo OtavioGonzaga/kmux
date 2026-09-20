@@ -1,3 +1,5 @@
+//! Unix-socket listener lifecycle for a [`super::FilteredAgent`].
+
 use super::{FilteredAgent, ProxyError};
 use std::collections::BTreeMap;
 use std::io;
@@ -21,6 +23,7 @@ struct ConnectionSession {
     upstream: Option<UnixStream>,
 }
 
+/// A running filtered SSH Agent Unix-socket server.
 pub struct ProxyServer {
     path: PathBuf,
     running: Arc<AtomicBool>,

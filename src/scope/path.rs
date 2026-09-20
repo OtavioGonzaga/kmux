@@ -1,7 +1,10 @@
+//! Validated slash-separated scope paths.
+
 use std::fmt;
 use std::str::FromStr;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// One normalized component of a [`ScopePath`].
 pub struct ScopeSegment(String);
 
 impl ScopeSegment {
@@ -29,6 +32,7 @@ impl fmt::Display for ScopeSegment {
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// A normalized hierarchical scope path.
 pub struct ScopePath(Vec<ScopeSegment>);
 
 impl ScopePath {
@@ -80,9 +84,13 @@ impl fmt::Display for ScopePath {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A scope-path validation error.
 pub enum ScopePathError {
+    /// The whole path was empty.
     EmptyPath,
+    /// A slash produced an empty path segment.
     EmptySegment,
+    /// A segment contained unsupported characters.
     InvalidSegment(String),
 }
 

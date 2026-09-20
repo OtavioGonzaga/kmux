@@ -1,3 +1,5 @@
+//! The serialized configuration schema and its filesystem store.
+
 use crate::agent::{AgentDefinition, AgentName};
 use crate::catalog::{Fingerprint, KeyAlias, KeyCatalog, KeyEntry};
 use crate::scope::ScopePath;
@@ -26,6 +28,7 @@ const MAX_YAML_ALIAS_EXPANSIONS_PER_ANCHOR: usize = 256;
 const SUPPORTED_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Validated runtime configuration containing agents and a key catalog.
 pub struct Config {
     agents: BTreeMap<AgentName, AgentDefinition>,
     catalog: KeyCatalog,
@@ -126,9 +129,13 @@ impl Config {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A supported serialized configuration format.
 pub enum ConfigFormat {
+    /// TOML configuration.
     Toml,
+    /// YAML or YML configuration.
     Yaml,
+    /// JSON configuration.
     Json,
 }
 
@@ -153,6 +160,7 @@ impl ConfigFormat {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Mutable serialized configuration that can be validated or persisted.
 pub struct ConfigDocument {
     version: u32,
     #[serde(default)]
@@ -265,6 +273,7 @@ impl ConfigDocument {
     }
 }
 
+/// Loads, discovers, and atomically persists configuration documents.
 pub struct ConfigStore;
 
 impl ConfigStore {
@@ -383,6 +392,7 @@ impl ConfigStore {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A discovered configuration filesystem path.
 pub struct ConfigPath(PathBuf);
 
 impl ConfigPath {
@@ -392,6 +402,7 @@ impl ConfigPath {
 }
 
 #[derive(Debug)]
+/// An error loading, validating, discovering, or saving configuration.
 pub enum ConfigError {
     Read {
         path: PathBuf,

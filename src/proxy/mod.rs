@@ -1,8 +1,15 @@
+//! Filtered SSH Agent protocol proxying.
+//!
+//! The proxy exposes only explicitly allowed public-key blobs and rejects
+//! mutable, malformed, unknown, and unsupported protocol operations.
+
 mod filtered_agent;
 mod protocol;
 mod server;
 
+/// Filtered-agent request handling.
 pub use filtered_agent::FilteredAgent;
+/// Unix-socket proxy server lifecycle.
 pub use server::ProxyServer;
 
 use crate::agent::AgentError;
@@ -10,9 +17,13 @@ use std::fmt;
 use std::io;
 
 #[derive(Debug)]
+/// Failure while serving a filtered SSH Agent.
 pub enum ProxyError {
+    /// Upstream-agent communication failed.
     Agent(AgentError),
+    /// Unix-socket I/O failed.
     Io(io::Error),
+    /// An upstream response violated the SSH Agent protocol.
     MalformedResponse,
 }
 
