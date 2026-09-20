@@ -461,7 +461,10 @@ impl fmt::Display for ConfigError {
                 "duplicate agent name '{agent}' after normalization"
             ),
             Self::UnknownAgent(agent) => {
-                write!(formatter, "unknown agent '{agent}'")
+                write!(
+                    formatter,
+                    "unknown agent '{agent}', run 'kmux agent add --socket /path/to/agent.sock {agent}'"
+                )
             }
             Self::AgentInUse(agent, aliases) => write!(
                 formatter,

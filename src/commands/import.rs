@@ -33,10 +33,9 @@ pub fn import_agent(
     let document = ConfigStore::load(path.as_path())?;
     let config = document.validate()?;
     let name = AgentName::new(name)?;
-    let definition = config
-        .agents()
-        .get(&name)
-        .ok_or_else(|| format!("unknown agent '{name}'"))?;
+    let definition = config.agents().get(&name).ok_or_else(|| {
+        format!("unknown agent '{name}', run 'kmux agent add --socket /path/to/agent.sock {name}'")
+    })?;
     let identities = UnixSocketAgent::new(definition.socket().to_owned()).identities()?;
     let plan = plan_import(&document, &config, &name, identities, scopes, tags)?;
 
