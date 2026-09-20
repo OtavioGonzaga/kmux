@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-20
+
 ### Changed
 
 - Authorize every matching identity from one upstream agent for filtered command
