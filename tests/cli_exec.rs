@@ -98,6 +98,40 @@ fn version_uses_the_binary_name_and_package_version() {
 }
 
 #[test]
+fn keys_filters_configured_entries_without_an_agent_connection() {
+    let directory = unique_path("keys-static-filter");
+    std::fs::create_dir(&directory).unwrap();
+    let config = directory.join("config.toml");
+    std::fs::write(
+        &config,
+        "version = 1\n[agents.primary]\ntype = \"unix\"\nsocket = \"/missing/agent.sock\"\n[keys.production]\nfingerprint = \"SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y\"\nagent = \"primary\"\nscopes = [\"company/production\"]\ncomment = \"AWS production\"\n[keys.unscoped]\nfingerprint = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"\nagent = \"primary\"\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_kmux"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "keys",
+            "--scope",
+            "company",
+            "--comment",
+            "aws",
+            "--agent",
+            "primary",
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "production\tSHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y\tprimary\tcompany/production\n"
+    );
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn import_persists_public_identities_and_is_idempotent() {
     let dir = unique_path("import");
     std::fs::create_dir(&dir).unwrap();

@@ -14,6 +14,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 - Add reusable key filters for scopes, comments, aliases, fingerprints, tags, and agents.
 - Allow configured keys without scopes while preserving filtered SSH-agent isolation.
 - Persist public identities imported by `kmux import agent`, with dry-run and explicit snippet output modes.
+- Allow `kmux keys` to filter configured keys with the same reusable selection filters as command execution.
 
 ## [0.1.0] - 2026-09-19
 

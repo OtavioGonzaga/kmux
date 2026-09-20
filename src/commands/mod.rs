@@ -91,7 +91,7 @@ pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
         Some(Command::Config {
             command: ConfigCommand::Check,
         }) => println!("configuration is valid"),
-        Some(Command::Keys) => list::print_keys(&config),
+        Some(Command::Keys { filters }) => list::print_keys(&config, &key_query(filters)?),
         Some(Command::Scopes) => list::print_scopes(&config),
         Some(Command::Doctor) => diagnostics::doctor(&config)?,
         Some(Command::Init { .. } | Command::Agent { .. } | Command::Key { .. }) => {

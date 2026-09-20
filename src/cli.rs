@@ -57,7 +57,10 @@ pub enum Command {
         #[command(subcommand)]
         command: KeyCommand,
     },
-    Keys,
+    Keys {
+        #[command(flatten)]
+        filters: FilterArgs,
+    },
     Scopes,
     Doctor,
     Exec {
@@ -232,6 +235,37 @@ mod tests {
 
         assert_eq!(filters.scope.as_deref(), Some("hogix"));
         assert_eq!(command, ["ssh", "-v", "host"]);
+    }
+
+    #[test]
+    fn parses_keys_filters() {
+        let cli = Cli::try_parse_from([
+            "kmux",
+            "keys",
+            "-s",
+            "hogix",
+            "-c",
+            "aws",
+            "-k",
+            "aws-production",
+            "-f",
+            "Wda9mr6okK7",
+            "-t",
+            "provider=aws",
+            "--agent",
+            "primary",
+        ])
+        .unwrap();
+        let Some(Command::Keys { filters }) = cli.command else {
+            panic!("expected keys command");
+        };
+
+        assert_eq!(filters.scope.as_deref(), Some("hogix"));
+        assert_eq!(filters.comment.as_deref(), Some("aws"));
+        assert_eq!(filters.key.as_deref(), Some("aws-production"));
+        assert_eq!(filters.fingerprint.as_deref(), Some("Wda9mr6okK7"));
+        assert_eq!(filters.tags, ["provider=aws"]);
+        assert_eq!(filters.agent.as_deref(), Some("primary"));
     }
 
     #[test]
