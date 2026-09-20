@@ -47,6 +47,7 @@ fn exec_forwards_sigint_and_sigterm_to_the_direct_child() {
                 "--config",
                 config.to_str().unwrap(),
                 "exec",
+                "-s",
                 "test",
                 "--",
                 "sh",
@@ -139,22 +140,14 @@ fn exec_passes_an_ephemeral_proxy_to_the_child_and_preserves_its_exit_code() {
     std::fs::write(
         &config,
         format!(
-            "version: 1\nagents:\n  test:\n    type: unix\n    socket: {}\nkeys:\n  test-key:\n    fingerprint: \"{fingerprint}\"\n    agent: test\n    scopes: [test]\n",
+            "version: 1\nagents:\n  test:\n    type: unix\n    socket: {}\nkeys:\n  test-key:\n    fingerprint: \"{fingerprint}\"\n    agent: test\n",
             upstream_socket.display()
         ),
     )
     .unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_kmux"))
-        .args([
-            "--config",
-            config.to_str().unwrap(),
-            "exec",
-            "test",
-            "--",
-            "sh",
-            "-c",
-        ])
+        .args(["--config", config.to_str().unwrap(), "--", "sh", "-c"])
         .arg("printf '%s' \"$SSH_AUTH_SOCK\"; exit 23")
         .output()
         .unwrap();
@@ -216,6 +209,7 @@ fn concurrent_exec_uses_unique_runtime_directories() {
                         "--config",
                         config.to_str().unwrap(),
                         "exec",
+                        "-s",
                         "test",
                         "--",
                         "sh",

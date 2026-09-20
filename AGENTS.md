@@ -3,6 +3,8 @@
 ## Releases and Deployment
 
 - PRs must target `main`.
+- When asked to open a PR, use `.github/pull_request_template.md` and preserve its sections and checklist.
+- Commits must follow the Conventional Commits pattern, such as `feat: ...`, `fix: ...`, `refactor: ...`, or `test: ...`.
 - PRs must not increment `version` at `Cargo.toml`.
 - Notable changes must update `CHANGELOG.md` > `Unreleased`.
 - Releases follow Semantic Versioning.
@@ -116,4 +118,5 @@ latest binary's recommended copy:
 
 Both are idempotent: re-runs replace the block delimited by the ai-memory
 start/end HTML-comment markers, without disturbing the rest of the file.
+
 <!-- ai-memory:end -->

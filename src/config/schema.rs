@@ -136,8 +136,7 @@ impl Config {
                 .map(|scope| ScopePath::from_str(scope))
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|source| ConfigError::Validation(source.to_string()))?;
-            let entry = KeyEntry::new(alias, fingerprint, agent, scopes, key.tags)
-                .map_err(|source| ConfigError::Validation(source.to_string()))?;
+            let entry = KeyEntry::new(alias, fingerprint, agent, scopes, key.tags);
             entries.push(entry);
         }
 
@@ -341,6 +340,7 @@ enum AgentKind {
 struct KeySchema {
     fingerprint: String,
     agent: String,
+    #[serde(default)]
     scopes: Vec<String>,
     #[serde(default)]
     tags: BTreeMap<String, String>,
@@ -405,7 +405,17 @@ mod tests {
             assert_eq!(
                 loaded
                     .catalog()
-                    .query(&crate::catalog::ScopeQuery::new("company".parse().unwrap()))
+                    .query(
+                        &crate::catalog::KeyQuery::from_values(
+                            Some("company".to_owned()),
+                            None,
+                            None,
+                            None,
+                            [],
+                            None,
+                        )
+                        .unwrap()
+                    )
                     .len(),
                 1
             );
@@ -540,8 +550,7 @@ mod tests {
             missing,
             [ScopePath::from_str("company/production").unwrap()],
             BTreeMap::new(),
-        )
-        .unwrap();
+        );
 
         assert!(matches!(
             Config::from_parts(BTreeMap::new(), KeyCatalog::from_entries([entry]).unwrap()),

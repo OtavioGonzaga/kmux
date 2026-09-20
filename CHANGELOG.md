@@ -6,6 +6,12 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ## [Unreleased]
 
+### Changed
+
+- Allow filtered command execution without scopes through `kmux [FILTERS] -- COMMAND...`.
+- Add reusable key filters for scopes, comments, aliases, fingerprints, tags, and agents.
+- Allow configured keys without scopes while preserving filtered SSH-agent isolation.
+
 ## [0.1.0] - 2026-09-19
 
 ### Added
