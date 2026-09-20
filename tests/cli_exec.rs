@@ -128,6 +128,38 @@ fn keys_filters_configured_entries_without_an_agent_connection() {
         String::from_utf8(output.stdout).unwrap(),
         "production\tSHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y\tprimary\tcompany/production\n"
     );
+
+    let empty = Command::new(env!("CARGO_BIN_EXE_kmux"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "keys",
+            "--agent",
+            "primary",
+            "--tag",
+            "environment=missing",
+        ])
+        .output()
+        .unwrap();
+    assert!(empty.status.success());
+    assert!(empty.stdout.is_empty());
+
+    let unknown = Command::new(env!("CARGO_BIN_EXE_kmux"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "keys",
+            "--agent",
+            "missing",
+        ])
+        .output()
+        .unwrap();
+    assert!(!unknown.status.success());
+    assert!(
+        String::from_utf8(unknown.stderr)
+            .unwrap()
+            .contains("unknown configured agent 'missing'")
+    );
     let _ = std::fs::remove_dir_all(directory);
 }
 

@@ -2,10 +2,15 @@ use kmux::catalog::{KeyQuery, QueryMatch};
 use kmux::config::Config;
 use std::collections::BTreeSet;
 
-pub fn print_keys(config: &Config, query: &KeyQuery) {
+pub fn print_keys(
+    config: &Config,
+    query: &KeyQuery,
+) -> Result<(), kmux::selection::SelectionError> {
+    kmux::selection::validate_agent(config, query)?;
     for line in key_lines(config, query) {
         println!("{line}");
     }
+    Ok(())
 }
 
 fn key_lines(config: &Config, query: &KeyQuery) -> Vec<String> {

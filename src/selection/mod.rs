@@ -59,11 +59,7 @@ fn sanitize_comment(comment: &str) -> String {
 }
 
 pub fn resolve(config: &Config, query: &KeyQuery) -> Result<Vec<Candidate>, SelectionError> {
-    if let Some(agent) = query.agent()
-        && !config.agents().contains_key(agent)
-    {
-        return Err(SelectionError::UnknownAgent(agent.clone()));
-    }
+    validate_agent(config, query)?;
     let entries = config.catalog().query_static(query);
     let required_agents = entries
         .iter()
@@ -81,6 +77,15 @@ pub fn resolve(config: &Config, query: &KeyQuery) -> Result<Vec<Candidate>, Sele
         );
     }
     Ok(resolve_available(entries, &available))
+}
+
+pub fn validate_agent(config: &Config, query: &KeyQuery) -> Result<(), SelectionError> {
+    if let Some(agent) = query.agent()
+        && !config.agents().contains_key(agent)
+    {
+        return Err(SelectionError::UnknownAgent(agent.clone()));
+    }
+    Ok(())
 }
 
 pub fn resolve_available(
