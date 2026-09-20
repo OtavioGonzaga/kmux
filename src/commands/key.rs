@@ -6,6 +6,14 @@ use std::collections::BTreeMap;
 use std::io::{IsTerminal, stdin};
 use std::str::FromStr;
 
+struct KeyAddRequest {
+    alias: String,
+    agent: Option<String>,
+    fingerprint: Option<String>,
+    scopes: Vec<String>,
+    tags: Vec<String>,
+}
+
 pub fn add(
     path: &ConfigPath,
     alias: String,
@@ -14,6 +22,35 @@ pub fn add(
     scopes: Vec<String>,
     tags: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    add_with(
+        path,
+        KeyAddRequest {
+            alias,
+            agent,
+            fingerprint,
+            scopes,
+            tags,
+        },
+        &InquireKeyPrompter,
+        |definition| UnixSocketAgent::new(definition.socket().to_owned()).identities(),
+    )
+}
+
+fn add_with(
+    path: &ConfigPath,
+    request: KeyAddRequest,
+    prompter: &dyn KeyPrompter,
+    identities: impl FnOnce(
+        &kmux::agent::AgentDefinition,
+    ) -> Result<Vec<Identity>, kmux::agent::AgentError>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let KeyAddRequest {
+        alias,
+        agent,
+        fingerprint,
+        scopes,
+        tags,
+    } = request;
     let alias = KeyAlias::new(alias)?;
     let has_flags =
         agent.is_some() || fingerprint.is_some() || !scopes.is_empty() || !tags.is_empty();
@@ -25,12 +62,7 @@ pub fn add(
             .ok_or("missing required --fingerprint when using non-interactive key creation")?;
         entry(alias, agent, fingerprint, scopes, tags)?
     } else {
-        interactive_entry_with(
-            &document.validate()?,
-            alias,
-            &InquireKeyPrompter,
-            |definition| UnixSocketAgent::new(definition.socket().to_owned()).identities(),
-        )?
+        interactive_entry_with(&document.validate()?, alias, prompter, identities)?
     };
     document.add_key(entry)?;
     ConfigStore::save(path.as_path(), &document)?;
@@ -169,7 +201,7 @@ impl KeyPrompter for InquireKeyPrompter {
         identities: &[Identity],
     ) -> Result<Identity, Box<dyn std::error::Error>> {
         if identities.is_empty() {
-            return Err("the selected agent has no public identities".into());
+            return Err("selected agent has no public identities".into());
         }
         Ok(inquire::Select::new(
             "Select identity",
@@ -241,7 +273,8 @@ impl std::fmt::Display for IdentityOption {
 #[cfg(test)]
 mod tests {
     use super::{
-        KeyPrompter, KeyRemovalConfirmation, add, interactive_entry_with, remove, remove_with,
+        InquireKeyPrompter, KeyAddRequest, KeyPrompter, KeyRemovalConfirmation, add, add_with,
+        interactive_entry_with, remove, remove_with,
     };
     use kmux::agent::AgentName;
     use kmux::catalog::{Fingerprint, Identity, KeyAlias};
@@ -370,7 +403,9 @@ mod tests {
         fs::remove_file(path).unwrap();
     }
 
-    struct FakePrompter;
+    struct FakePrompter {
+        confirmed: bool,
+    }
 
     struct FakeConfirmation {
         terminal: bool,
@@ -416,7 +451,7 @@ mod tests {
             _: &AgentName,
             _: &Identity,
         ) -> Result<bool, Box<dyn std::error::Error>> {
-            Ok(true)
+            Ok(self.confirmed)
         }
     }
 
@@ -434,7 +469,7 @@ mod tests {
         let entry = interactive_entry_with(
             &document.validate().unwrap(),
             KeyAlias::new("deploy").unwrap(),
-            &FakePrompter,
+            &FakePrompter { confirmed: true },
             |_| Ok(vec![identity.clone()]),
         )
         .unwrap();
@@ -444,6 +479,78 @@ mod tests {
             entry.tags().get("provider").map(String::as_str),
             Some("aws")
         );
+    }
+
+    #[test]
+    fn wizard_rejects_missing_agents_and_identities() {
+        let empty = ConfigDocument::empty();
+        let error = interactive_entry_with(
+            &empty.validate().unwrap(),
+            KeyAlias::new("deploy").unwrap(),
+            &InquireKeyPrompter,
+            |_| Ok(vec![]),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("no configured agents"));
+
+        let mut document = ConfigDocument::empty();
+        document
+            .add_agent(AgentName::new("work").unwrap(), "/tmp/work.sock".into())
+            .unwrap();
+        let error = interactive_entry_with(
+            &document.validate().unwrap(),
+            KeyAlias::new("deploy").unwrap(),
+            &InquireKeyPrompter,
+            |_| Ok(vec![]),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("selected agent has no public identities")
+        );
+    }
+
+    #[test]
+    fn cancelled_wizard_does_not_persist_a_key() {
+        let path = path("cancelled-wizard");
+        let mut document = ConfigDocument::empty();
+        document
+            .add_agent(AgentName::new("work").unwrap(), "/tmp/work.sock".into())
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+        let config = Config::discover(Some(&path)).unwrap();
+        let identity = Identity {
+            key_blob: vec![1],
+            fingerprint: Fingerprint::from_str(FINGERPRINT).unwrap(),
+            comment: None,
+        };
+        assert!(
+            add_with(
+                &config,
+                KeyAddRequest {
+                    alias: "deploy".to_owned(),
+                    agent: None,
+                    fingerprint: None,
+                    scopes: vec![],
+                    tags: vec![],
+                },
+                &FakePrompter { confirmed: false },
+                |_| Ok(vec![identity]),
+            )
+            .is_err()
+        );
+        assert!(
+            ConfigStore::load(&path)
+                .unwrap()
+                .validate()
+                .unwrap()
+                .catalog()
+                .entries()
+                .next()
+                .is_none()
+        );
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

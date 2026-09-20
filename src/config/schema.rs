@@ -355,7 +355,7 @@ impl ConfigStore {
         Self::discover_in(directory)
     }
 
-    fn discover_in(directory: PathBuf) -> Result<ConfigPath, ConfigError> {
+    pub fn discover_in(directory: PathBuf) -> Result<ConfigPath, ConfigError> {
         let candidates = ["config.yaml", "config.yml", "config.json", "config.toml"]
             .into_iter()
             .map(|name| directory.join(name))
