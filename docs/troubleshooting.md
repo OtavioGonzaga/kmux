@@ -33,9 +33,29 @@ Import the current public identities if the desired key is absent:
 
 ## Multiple Identities Match
 
-Run from a terminal to use the chooser, or add `--key`, `--agent`, `--tag`,
-`--comment`, or a narrower `--scope`. Non-interactive commands cannot choose
-among several candidates.
+Explicit filters authorize every available matching identity from one upstream
+agent, so several matches are not an error for commands such as:
+
+```bash
+kmux --scope personal -- git fetch
+```
+
+Add `--select` and run from a terminal to choose a subset. Without filters,
+several candidates require a terminal for interactive selection; otherwise add
+`--key`, `--agent`, `--tag`, `--comment`, or a narrower `--scope`.
+
+## Matches Span Multiple Upstream Agents
+
+A filtered command can delegate identities from only one upstream agent. If kmux
+reports `matched identities span multiple upstream agents`, constrain the set
+explicitly:
+
+```bash
+kmux --scope personal --agent bitwarden -- git fetch
+```
+
+Alternatively, run with `--select` from a terminal to choose an agent and then
+an identity subset.
 
 ## Agent Socket Unavailable
 
@@ -68,4 +88,6 @@ which reads public identities directly, instead of transcribing a fingerprint.
 
 kmux sets `SSH_AUTH_SOCK` only for its child process. Do not export the
 temporary socket yourself. In CI or pipelines, provide filters that resolve to
-exactly one key; otherwise selection fails rather than guessing.
+one upstream agent; they may authorize multiple matching keys. Do not use
+`--select` in a non-interactive environment, and add filters when unfiltered
+execution would require a selection.

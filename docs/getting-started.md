@@ -83,9 +83,10 @@ particular alias instead, run:
 kmux --key github-personal -- git fetch
 ```
 
-If several keys match, kmux prompts on the controlling terminal. Add filters to
-narrow the result, or use a terminal to choose. [Selection](selection.md)
-explains the matching rules.
+The filters authorize every available matching identity from one upstream agent.
+Add `--select` to choose a subset interactively. Without filters, several keys
+require a controlling terminal for selection. [Selection](selection.md) explains
+the matching rules.
 
 ## Next Steps
 

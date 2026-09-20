@@ -11,8 +11,13 @@ Versioning.
 
 - Authorize every matching identity from one upstream agent for filtered command
   execution, instead of interactively reducing the set to one key.
-- Add `--select` for interactive subset selection and use multi-selection for
+- Add `--select` for interactive subset selection and use `MultiSelect` for
   ambiguous unfiltered interactive execution.
+
+### Documentation
+
+- Document coding agents and harnesses as a filtered `SSH_AUTH_SOCK` use case,
+  including kmux's non-sandbox limitation.
 
 ## [0.2.0] - 2026-09-20
 

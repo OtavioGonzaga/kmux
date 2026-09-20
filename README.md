@@ -1,11 +1,11 @@
 # kmux
 
-`kmux` runs a command with a filtered view of an existing SSH agent. It is
-useful when an upstream agent exposes many SSH identities and clients such as
-OpenSSH try more identities than a remote server permits.
+`kmux` delegates a filtered set of SSH identities from an existing SSH agent to
+a child process. It is useful when an upstream agent exposes many SSH identities
+and clients such as OpenSSH try more identities than a remote server permits.
 
 `kmux` never reads, exports, or stores private keys. It proxies the SSH Agent
-protocol and presents only selected configured public identities to the child
+protocol and presents only authorized configured public identities to the child
 process.
 
 ## Quick Start
@@ -60,11 +60,15 @@ kmux --scope company --comment aws --tag environment=production -- ssh deploy@ex
 
 # The explicit form is useful when a wrapper needs an unambiguous subcommand.
 kmux exec --key github-personal -- git fetch
+
+# Choose an interactive subset of otherwise matching identities.
+kmux --scope personal --select -- codex
 ```
 
 Filters are combined with AND. A parent scope matches keys in descendant scopes.
-See [selection](docs/selection.md) and the complete
-[CLI reference](docs/cli.md).
+During execution, explicit filters authorize every matching identity from one
+upstream agent. Add `--select` to choose an interactive subset instead. See
+[selection](docs/selection.md) and the complete [CLI reference](docs/cli.md).
 
 ## Configuration
 
@@ -90,6 +94,34 @@ environment = "production"
 
 The [configuration reference](docs/configuration.md) documents discovery,
 validation, YAML and JSON support, and every field.
+
+## Coding Agents
+
+Coding agents and harnesses that run Git or SSH inherit the filtered
+`SSH_AUTH_SOCK` that kmux gives their process. Use scopes and tags to delegate
+only the identities appropriate for that task:
+
+```bash
+# Expose personal identities to OpenCode.
+kmux --scope personal -- opencode
+
+# Expose work identities to Claude Code.
+kmux --scope work -- claude
+
+# Expose identities for one client to Codex.
+kmux --scope client/acme -- codex
+
+# Further narrow a set with local catalog metadata.
+kmux --scope personal --tag provider=github -- opencode
+
+# Choose a short-lived subset interactively.
+kmux --scope personal --select -- codex
+```
+
+kmux controls the SSH identities exposed through the inherited `SSH_AUTH_SOCK`.
+It is not a sandbox or process-isolation mechanism: a process running as the
+same user may be able to access other local resources or locate an upstream
+agent socket, depending on the environment and permissions.
 
 ## Security Model
 
