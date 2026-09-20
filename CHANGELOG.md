@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-20
+
 ### Changed
 
 - Add atomic CLI configuration management with `init`, `agent add/remove`, and
