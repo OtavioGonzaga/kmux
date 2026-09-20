@@ -30,6 +30,17 @@ pub struct FilterArgs {
     pub agent: Option<String>,
 }
 
+impl FilterArgs {
+    pub fn is_empty(&self) -> bool {
+        self.scope.is_none()
+            && self.comment.is_none()
+            && self.key.is_none()
+            && self.fingerprint.is_none()
+            && self.tags.is_empty()
+            && self.agent.is_none()
+    }
+}
+
 #[derive(Subcommand)]
 pub enum Command {
     Keys,
@@ -104,6 +115,49 @@ mod tests {
     }
 
     #[test]
+    fn parses_root_filters_without_a_separator_and_preserves_child_flags() {
+        let cli = Cli::try_parse_from(["kmux", "-s", "hogix", "ssh", "-v", "host"]).unwrap();
+
+        assert!(cli.command.is_none());
+        assert_eq!(cli.filters.scope.as_deref(), Some("hogix"));
+        assert_eq!(cli.child_command, ["ssh", "-v", "host"]);
+    }
+
+    #[test]
+    fn parses_all_filters_and_preserves_child_filter_collisions() {
+        let cli = Cli::try_parse_from([
+            "kmux",
+            "-s",
+            "hogix",
+            "-c",
+            "aws",
+            "-k",
+            "aws-production",
+            "-f",
+            "Wda9mr6okK7",
+            "-t",
+            "provider=aws",
+            "--agent",
+            "bitwarden",
+            "some-command",
+            "--scope",
+            "child-value",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.filters.scope.as_deref(), Some("hogix"));
+        assert_eq!(cli.filters.comment.as_deref(), Some("aws"));
+        assert_eq!(cli.filters.key.as_deref(), Some("aws-production"));
+        assert_eq!(cli.filters.fingerprint.as_deref(), Some("Wda9mr6okK7"));
+        assert_eq!(cli.filters.tags, ["provider=aws"]);
+        assert_eq!(cli.filters.agent.as_deref(), Some("bitwarden"));
+        assert_eq!(
+            cli.child_command,
+            ["some-command", "--scope", "child-value"]
+        );
+    }
+
+    #[test]
     fn parses_explicit_exec_syntax() {
         let explicit =
             Cli::try_parse_from(["kmux", "exec", "-s", "hogix", "--", "ssh", "host"]).unwrap();
@@ -112,5 +166,17 @@ mod tests {
         };
         assert_eq!(filters.scope.as_deref(), Some("hogix"));
         assert_eq!(command, ["ssh", "host"]);
+    }
+
+    #[test]
+    fn parses_explicit_exec_without_a_separator_and_preserves_child_flags() {
+        let explicit =
+            Cli::try_parse_from(["kmux", "exec", "-s", "hogix", "ssh", "-v", "host"]).unwrap();
+        let Some(Command::Exec { filters, command }) = explicit.command else {
+            panic!("expected exec");
+        };
+
+        assert_eq!(filters.scope.as_deref(), Some("hogix"));
+        assert_eq!(command, ["ssh", "-v", "host"]);
     }
 }

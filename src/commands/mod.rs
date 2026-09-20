@@ -8,6 +8,12 @@ use kmux::catalog::KeyQuery;
 use kmux::config::Config;
 
 pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
+    if cli.command.is_some() && !cli.filters.is_empty() {
+        return Err(
+            "filters before a subcommand are only valid for direct command execution; use `kmux exec -s hogix ...`"
+                .into(),
+        );
+    }
     let path = Config::discover(cli.config.as_deref())?;
     let config = Config::load(path.as_path())?;
     match cli.command {
@@ -31,7 +37,7 @@ pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
         None if !cli.child_command.is_empty() => {
             return exec::execute(&config, key_query(cli.filters)?, cli.child_command);
         }
-        None => return Err("a command is required after `--`".into()),
+        None => return Err("a child command is required".into()),
     }
     Ok(0)
 }
@@ -45,4 +51,27 @@ fn key_query(filters: FilterArgs) -> Result<KeyQuery, Box<dyn std::error::Error>
         filters.tags,
         filters.agent,
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run;
+    use crate::cli::Cli;
+    use clap::Parser;
+
+    #[test]
+    fn rejects_root_filters_before_all_subcommands() {
+        for arguments in [
+            ["kmux", "-s", "hogix", "exec", "ssh", "host"].as_slice(),
+            ["kmux", "-c", "aws", "doctor"].as_slice(),
+            ["kmux", "-s", "hogix", "keys"].as_slice(),
+        ] {
+            let error = run(Cli::try_parse_from(arguments).unwrap()).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("filters before a subcommand are only valid")
+            );
+        }
+    }
 }

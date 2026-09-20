@@ -54,13 +54,13 @@ impl KeyQuery {
         self.agent.as_ref()
     }
 
-    pub fn matches_comment(&self, comment: Option<&str>) -> bool {
+    pub fn matches_identity_comment(&self, comment: Option<&str>) -> bool {
         self.comment.as_ref().is_none_or(|needle| {
             comment.is_some_and(|comment| comment.to_lowercase().contains(&needle.to_lowercase()))
         })
     }
 
-    pub fn match_entry(&self, entry: &KeyEntry) -> Option<Option<ScopePath>> {
+    pub fn matches_entry(&self, entry: &KeyEntry) -> Option<Option<ScopePath>> {
         let matched_scope = match &self.scope {
             Some(scope) => entry
                 .scopes()
@@ -222,11 +222,11 @@ impl KeyCatalog {
         self.entries.values()
     }
 
-    pub fn query(&self, query: &KeyQuery) -> Vec<QueryMatch<'_>> {
+    pub fn query_static(&self, query: &KeyQuery) -> Vec<QueryMatch<'_>> {
         self.entries
             .values()
             .filter_map(|entry| {
-                query.match_entry(entry).map(|matched_scope| QueryMatch {
+                query.matches_entry(entry).map(|matched_scope| QueryMatch {
                     entry,
                     matched_scope,
                 })
@@ -321,13 +321,13 @@ mod tests {
         .unwrap();
         assert_eq!(
             catalog
-                .query(&query(Some("company/postgres"), None, None, &[]))
+                .query_static(&query(Some("company/postgres"), None, None, &[]))
                 .len(),
             1
         );
         assert!(
             catalog
-                .query(&query(
+                .query_static(&query(
                     Some("company/postgres/production/x"),
                     None,
                     None,
@@ -337,13 +337,13 @@ mod tests {
         );
         assert_eq!(
             catalog
-                .query(&query(None, Some("postgres"), Some("ZZZZ"), &[]))
+                .query_static(&query(None, Some("postgres"), Some("ZZZZ"), &[]))
                 .len(),
             0
         );
         assert_eq!(
             catalog
-                .query(&query(
+                .query_static(&query(
                     None,
                     Some("postgres"),
                     Some("Wda9mr6okK7"),
@@ -352,23 +352,47 @@ mod tests {
                 .len(),
             1
         );
-        assert_eq!(catalog.query(&query(None, None, Some(B), &[])).len(), 1);
+        assert_eq!(
+            catalog.query_static(&query(None, None, Some(B), &[])).len(),
+            1
+        );
         let wrong_agent =
             KeyQuery::from_values(None, None, None, None, [], Some("other-agent".to_owned()))
                 .unwrap();
-        assert!(catalog.query(&wrong_agent).is_empty());
+        assert!(catalog.query_static(&wrong_agent).is_empty());
     }
     #[test]
     fn accepts_unscoped_entries_and_rejects_bad_tags() {
         let catalog = KeyCatalog::from_entries([entry("unscoped", A, &[], &[])]).unwrap();
-        assert_eq!(catalog.query(&KeyQuery::default()).len(), 1);
+        assert_eq!(catalog.query_static(&KeyQuery::default()).len(), 1);
         assert!(
             catalog
-                .query(&query(Some("company"), None, None, &[]))
+                .query_static(&query(Some("company"), None, None, &[]))
                 .is_empty()
         );
         for tag in ["invalid", "=value", "key="] {
             assert!(KeyQuery::from_values(None, None, None, None, [tag.to_owned()], None).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_filter_values() {
+        for (scope, fingerprint, agent) in [
+            (Some("company//production"), None, None),
+            (None, Some("not-a-fingerprint"), None),
+            (None, None, Some("invalid agent")),
+        ] {
+            assert!(
+                KeyQuery::from_values(
+                    scope.map(str::to_owned),
+                    None,
+                    None,
+                    fingerprint.map(str::to_owned),
+                    [],
+                    agent.map(str::to_owned),
+                )
+                .is_err()
+            );
         }
     }
 
@@ -385,6 +409,6 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(catalog.query(&query).is_empty());
+        assert!(catalog.query_static(&query).is_empty());
     }
 }

@@ -1,3 +1,4 @@
+use base64::Engine;
 use kmux::catalog::Fingerprint;
 use rustix::process::{Pid, Signal, kill_process};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -96,6 +97,85 @@ fn version_uses_the_binary_name_and_package_version() {
     );
 }
 
+#[test]
+fn root_filters_expose_only_the_matching_identity_to_the_child() {
+    if !available("ssh-agent") || !available("ssh-add") || !available("ssh-keygen") {
+        eprintln!("skipping OpenSSH end-to-end test: required commands are unavailable");
+        return;
+    }
+
+    let dir = unique_path("filtered-child-identities");
+    std::fs::create_dir(&dir).unwrap();
+    let upstream_socket = dir.join("upstream.sock");
+    let mut agent = Command::new("ssh-agent")
+        .args(["-D", "-a"])
+        .arg(&upstream_socket)
+        .spawn()
+        .unwrap();
+    wait_for_socket(&upstream_socket);
+
+    let hogix_key = dir.join("hogix");
+    let personal_key = dir.join("personal");
+    for (key, comment) in [(&hogix_key, "hogix key"), (&personal_key, "personal key")] {
+        assert!(
+            Command::new("ssh-keygen")
+                .args(["-q", "-t", "ed25519", "-N", "", "-C", comment, "-f"])
+                .arg(key)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("ssh-add")
+                .arg(key)
+                .env("SSH_AUTH_SOCK", &upstream_socket)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+
+    let hogix_public = std::fs::read_to_string(hogix_key.with_extension("pub")).unwrap();
+    let personal_public = std::fs::read_to_string(personal_key.with_extension("pub")).unwrap();
+    let fingerprint = |public_key: &str| {
+        Fingerprint::from_public_key_blob(
+            &base64::engine::general_purpose::STANDARD
+                .decode(public_key.split_whitespace().nth(1).unwrap())
+                .unwrap(),
+        )
+    };
+    let config = dir.join("config.yaml");
+    std::fs::write(
+        &config,
+        format!(
+            "version: 1\nagents:\n  test:\n    type: unix\n    socket: {}\nkeys:\n  hogix:\n    fingerprint: \"{}\"\n    agent: test\n    scopes: [hogix]\n  personal:\n    fingerprint: \"{}\"\n    agent: test\n    scopes: [personal]\n",
+            upstream_socket.display(),
+            fingerprint(&hogix_public),
+            fingerprint(&personal_public),
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_kmux"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "-s",
+            "hogix",
+            "ssh-add",
+            "-L",
+        ])
+        .output()
+        .unwrap();
+    stop_agent(&mut agent);
+
+    assert!(output.status.success(), "kmux failed: {output:?}");
+    let identities = String::from_utf8(output.stdout).unwrap();
+    assert!(identities.contains(&hogix_public));
+    assert!(!identities.contains(&personal_public));
+    let _ = std::fs::remove_dir_all(dir);
+}
+
 fn write_frame(stream: &mut impl Write, payload: &[u8]) {
     stream
         .write_all(&(payload.len() as u32).to_be_bytes())
@@ -115,6 +195,25 @@ fn read_frame(stream: &mut impl Read) -> Vec<u8> {
 fn put_string(payload: &mut Vec<u8>, value: &[u8]) {
     payload.extend_from_slice(&(value.len() as u32).to_be_bytes());
     payload.extend_from_slice(value);
+}
+
+fn available(command: &str) -> bool {
+    Command::new(command).arg("-h").output().is_ok()
+}
+
+fn wait_for_socket(path: &std::path::Path) {
+    for _ in 0..100 {
+        if path.exists() {
+            return;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    panic!("OpenSSH agent did not create {}", path.display());
+}
+
+fn stop_agent(agent: &mut std::process::Child) {
+    let _ = agent.kill();
+    let _ = agent.wait();
 }
 
 #[test]

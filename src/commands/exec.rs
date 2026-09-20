@@ -20,7 +20,7 @@ pub fn execute(
     command: Vec<String>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
     if command.is_empty() {
-        return Err("a child command is required after `--`".into());
+        return Err("a child command is required".into());
     }
     tracing::info!(query = %query, command = %command[0], "starting filtered command");
     let candidate = choose(&query, resolve(config, &query)?)?;

@@ -405,7 +405,7 @@ mod tests {
             assert_eq!(
                 loaded
                     .catalog()
-                    .query(
+                    .query_static(
                         &crate::catalog::KeyQuery::from_values(
                             Some("company".to_owned()),
                             None,

@@ -15,12 +15,19 @@ pub struct Candidate {
 
 impl fmt::Display for Candidate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let scope = self
-            .matched_scope
-            .as_ref()
-            .or_else(|| self.entry.scopes().iter().next())
-            .map(ToString::to_string)
-            .unwrap_or_else(|| "unscoped".to_owned());
+        let scope = match &self.matched_scope {
+            Some(scope) => scope.to_string(),
+            None if self.entry.scopes().is_empty() => "unscoped".to_owned(),
+            None => format!(
+                "scopes: {}",
+                self.entry
+                    .scopes()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        };
         write!(
             f,
             "{} - {} - {}",
@@ -58,7 +65,7 @@ pub fn resolve(config: &Config, query: &KeyQuery) -> Result<Vec<Candidate>, Sele
     {
         return Err(SelectionError::UnknownAgent(agent.clone()));
     }
-    let entries = config.catalog().query(query);
+    let entries = config.catalog().query_static(query);
     let required_agents = entries
         .iter()
         .map(|entry| entry.entry.agent())
@@ -90,7 +97,7 @@ pub fn resolve_available(
                 .iter()
                 .find(|identity| identity.fingerprint == *matched.entry.fingerprint())
                 .cloned()
-                .filter(|identity| query.matches_comment(identity.comment.as_deref()))
+                .filter(|identity| query.matches_identity_comment(identity.comment.as_deref()))
                 .map(|identity| Candidate {
                     entry: matched.entry.clone(),
                     identity,
@@ -188,6 +195,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::io;
     use std::os::unix::net::UnixListener;
+    use std::str::FromStr;
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -234,6 +242,21 @@ mod tests {
             Err(SelectionError::Ambiguous(_, _))
         ));
     }
+
+    struct RecordingChooser(std::cell::Cell<bool>);
+    impl CandidateChooser for RecordingChooser {
+        fn choose(&self, _: Vec<Candidate>) -> Result<Candidate, SelectionError> {
+            self.0.set(true);
+            unreachable!("a single candidate must not invoke the chooser")
+        }
+    }
+
+    #[test]
+    fn selection_returns_a_single_candidate_without_invoking_the_chooser() {
+        let chooser = RecordingChooser(std::cell::Cell::new(false));
+        assert!(choose_with_mode(&query(), vec![candidate()], true, &chooser).is_ok());
+        assert!(!chooser.0.get());
+    }
     #[test]
     fn unscoped_candidates_and_unicode_comments_are_displayed_safely() {
         assert_eq!(candidate().to_string(), "key - unscoped - no comment");
@@ -241,6 +264,27 @@ mod tests {
             sanitize_comment("chave de produção\n"),
             "chave de produção "
         );
+    }
+
+    #[test]
+    fn candidates_only_display_a_matched_scope_when_one_was_requested() {
+        let mut candidate = candidate();
+        candidate.entry = KeyEntry::new(
+            KeyAlias::new("key").unwrap(),
+            Fingerprint::from_public_key_blob(b"key"),
+            AgentName::new("agent").unwrap(),
+            [
+                "hogix/production".parse().unwrap(),
+                "backup".parse().unwrap(),
+            ],
+            BTreeMap::new(),
+        );
+        assert_eq!(
+            candidate.to_string(),
+            "key - scopes: backup,hogix/production - no comment"
+        );
+        candidate.matched_scope = Some("hogix/production".parse().unwrap());
+        assert_eq!(candidate.to_string(), "key - hogix/production - no comment");
     }
 
     #[test]
@@ -320,8 +364,57 @@ mod tests {
             }],
         )]);
         assert_eq!(
-            resolve_available(catalog.query(&query), &available, &query).len(),
+            resolve_available(catalog.query_static(&query), &available, &query).len(),
             1
         );
+    }
+
+    #[test]
+    fn fingerprint_prefixes_remain_ambiguous_when_multiple_identities_match() {
+        let first =
+            Fingerprint::from_str("SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y").unwrap();
+        let second =
+            Fingerprint::from_str("SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+A").unwrap();
+        let entries = KeyCatalog::from_entries([
+            KeyEntry::new(
+                KeyAlias::new("first").unwrap(),
+                first.clone(),
+                AgentName::new("agent").unwrap(),
+                [],
+                BTreeMap::new(),
+            ),
+            KeyEntry::new(
+                KeyAlias::new("second").unwrap(),
+                second.clone(),
+                AgentName::new("agent").unwrap(),
+                [],
+                BTreeMap::new(),
+            ),
+        ])
+        .unwrap();
+        let prefix = &first.as_str()[7..18];
+        let query =
+            KeyQuery::from_values(None, None, None, Some(prefix.to_owned()), [], None).unwrap();
+        let available = BTreeMap::from([(
+            AgentName::new("agent").unwrap(),
+            vec![
+                Identity {
+                    key_blob: b"first".to_vec(),
+                    fingerprint: first,
+                    comment: None,
+                },
+                Identity {
+                    key_blob: b"second".to_vec(),
+                    fingerprint: second,
+                    comment: None,
+                },
+            ],
+        )]);
+        let candidates = resolve_available(entries.query_static(&query), &available, &query);
+
+        assert!(matches!(
+            choose_with_mode(&query, candidates, false, &FakeChooser),
+            Err(SelectionError::Ambiguous(_, _))
+        ));
     }
 }
