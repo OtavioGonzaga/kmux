@@ -7,13 +7,13 @@ mod key;
 mod list;
 
 use crate::cli::{
-    AgentCommand, Cli, Command, ConfigCommand, FilterArgs, ImportCommand, KeyCommand,
+    AgentCommand, Cli, Command, ConfigCommand, ExecutionArgs, FilterArgs, ImportCommand, KeyCommand,
 };
 use kmux::catalog::KeyQuery;
 use kmux::config::Config;
 
 pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
-    if cli.command.is_some() && !cli.filters.is_empty() {
+    if cli.command.is_some() && (!cli.execution.filters.is_empty() || cli.execution.select) {
         return Err(
             "filters before a subcommand are only valid for direct command execution; use `kmux exec -s hogix ...`"
                 .into(),
@@ -84,9 +84,8 @@ pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
     }
     let config = Config::load(path.as_path())?;
     match cli.command {
-        Some(Command::Exec { filters, command }) => {
-            let has_filters = !filters.is_empty();
-            return exec::execute(&config, key_query(filters)?, has_filters, command);
+        Some(Command::Exec { execution, command }) => {
+            return execute(&config, execution, command);
         }
         Some(Command::Import { .. }) => unreachable!("import returns before loading configuration"),
         Some(Command::Config {
@@ -99,17 +98,26 @@ pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
             unreachable!("mutating commands return before loading configuration")
         }
         None if !cli.child_command.is_empty() => {
-            let has_filters = !cli.filters.is_empty();
-            return exec::execute(
-                &config,
-                key_query(cli.filters)?,
-                has_filters,
-                cli.child_command,
-            );
+            return execute(&config, cli.execution, cli.child_command);
         }
         None => return Err("a child command is required".into()),
     }
     Ok(0)
+}
+
+fn execute(
+    config: &Config,
+    execution: ExecutionArgs,
+    command: Vec<String>,
+) -> Result<i32, Box<dyn std::error::Error>> {
+    let has_filters = !execution.filters.is_empty();
+    exec::execute(
+        config,
+        key_query(execution.filters)?,
+        has_filters,
+        execution.select,
+        command,
+    )
 }
 
 fn key_query(filters: FilterArgs) -> Result<KeyQuery, Box<dyn std::error::Error>> {
@@ -135,6 +143,7 @@ mod tests {
             ["kmux", "-s", "hogix", "exec", "ssh", "host"].as_slice(),
             ["kmux", "-c", "aws", "doctor"].as_slice(),
             ["kmux", "-s", "hogix", "keys"].as_slice(),
+            ["kmux", "--select", "doctor"].as_slice(),
         ] {
             let error = run(Cli::try_parse_from(arguments).unwrap()).unwrap_err();
             assert!(

@@ -2,7 +2,7 @@ use kmux::agent::UnixSocketAgent;
 use kmux::catalog::KeyQuery;
 use kmux::config::Config;
 use kmux::proxy::{FilteredAgent, ProxyServer};
-use kmux::selection::{choose, resolve, resolve_single_agent};
+use kmux::selection::resolve_for_execution;
 use rustix::process::{Pid, Signal, kill_process};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
@@ -18,17 +18,14 @@ pub fn execute(
     config: &Config,
     query: KeyQuery,
     has_filters: bool,
+    select: bool,
     command: Vec<String>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
     if command.is_empty() {
         return Err("a child command is required".into());
     }
     tracing::info!(query = %query, command = %command[0], "starting filtered command");
-    let candidates = if has_filters {
-        resolve_single_agent(config, &query)?
-    } else {
-        vec![choose(&query, resolve(config, &query)?)?]
-    };
+    let candidates = resolve_for_execution(config, &query, has_filters, select)?;
     let definition = config
         .agents()
         .get(candidates[0].entry.agent())
