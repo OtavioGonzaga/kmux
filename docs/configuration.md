@@ -1,6 +1,7 @@
 # Configuration
 
-kmux uses one configuration document with schema `version = 1`. TOML is the recommended format; YAML (`.yaml` or `.yml`) and JSON use the same schema.
+kmux uses one configuration document with schema `version = 1`. TOML is the
+recommended format; YAML (`.yaml` or `.yml`) and JSON use the same schema.
 
 ## Location And Discovery
 
@@ -11,7 +12,10 @@ kmux uses the first explicit source in this order:
 3. `$XDG_CONFIG_HOME/kmux/`
 4. `$HOME/.config/kmux/`
 
-At a discovered directory it considers `config.toml`, `config.yaml`, `config.yml`, and `config.json`. No format wins over another: multiple existing candidates are an error. Use `--config` to select one explicitly. Input and serialized output are limited to 1 MiB.
+At a discovered directory it considers `config.toml`, `config.yaml`,
+`config.yml`, and `config.json`. No format wins over another: multiple existing
+candidates are an error. Use `--config` to select one explicitly. Input and
+serialized output are limited to 1 MiB.
 
 ## TOML Schema
 
@@ -52,10 +56,18 @@ fingerprint = "SHA256:replace-with-another-public-key-fingerprint"
 agent = "bitwarden"
 ```
 
-Agent names, aliases, scope segments, and tag keys and values are validated. Names and scope segments are normalized to lowercase. Agent sockets must be absolute. Keys must reference configured agents, and aliases and fingerprints must be unique. Use `kmux config check` after manual edits.
+Agent names, aliases, scope segments, and tag keys and values are validated.
+Names and scope segments are normalized to lowercase. Agent sockets must be
+absolute. Keys must reference configured agents, and aliases and fingerprints
+must be unique. Use `kmux config check` after manual edits.
 
 ## Managing Configuration
 
-`kmux init` creates a minimal document and is idempotent when a supported configuration already exists. `agent add`, `agent remove`, `key add`, `key remove`, and `import agent` validate the complete document before atomically replacing it. Writes use private file permissions.
+`kmux init` creates a minimal document and is idempotent when a supported
+configuration already exists. `agent add`, `agent remove`, `key add`,
+`key remove`, and `import agent` validate the complete document before
+atomically replacing it. Writes use private file permissions.
 
-YAML supports bounded anchors and aliases, but rejects duplicate keys, merge keys, and multiple documents. Choose TOML unless interoperability requires YAML or JSON.
+YAML supports bounded anchors and aliases, but rejects duplicate keys, merge
+keys, and multiple documents. Choose TOML unless interoperability requires YAML
+or JSON.

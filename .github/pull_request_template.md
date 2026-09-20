@@ -25,6 +25,7 @@
 - [ ] Does not change `Cargo.toml` package version
 - [ ] Updates `CHANGELOG.md` under `[Unreleased]`, or no entry is needed
 - [ ] `cargo fmt --check` passes
+- [ ] `dprint check` passes
 - [ ] `cargo clippy --all-targets --all-features -- -D warnings` passes
 - [ ] `cargo test --all-targets` passes
 - [ ] Does not expose sensitive data

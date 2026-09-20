@@ -1,8 +1,12 @@
 # kmux
 
-`kmux` runs a command with a filtered view of an existing SSH agent. It is useful when an upstream agent exposes many SSH identities and clients such as OpenSSH try more identities than a remote server permits.
+`kmux` runs a command with a filtered view of an existing SSH agent. It is
+useful when an upstream agent exposes many SSH identities and clients such as
+OpenSSH try more identities than a remote server permits.
 
-`kmux` never reads, exports, or stores private keys. It proxies the SSH Agent protocol and presents only selected configured public identities to the child process.
+`kmux` never reads, exports, or stores private keys. It proxies the SSH Agent
+protocol and presents only selected configured public identities to the child
+process.
 
 ## Quick Start
 
@@ -26,7 +30,9 @@ kmux keys
 kmux --scope personal -- ssh user@example.com
 ```
 
-The upstream agent can be Bitwarden, `ssh-agent`, or another compatible Unix-socket agent. See the [getting started guide](docs/getting-started.md) for an explained workflow.
+The upstream agent can be Bitwarden, `ssh-agent`, or another compatible
+Unix-socket agent. See the [getting started guide](docs/getting-started.md) for
+an explained workflow.
 
 ## Installation
 
@@ -34,7 +40,8 @@ The upstream agent can be Bitwarden, `ssh-agent`, or another compatible Unix-soc
 - [Latest GitHub Release](https://github.com/OtavioGonzaga/kmux/releases/latest)
 - [Rust API on docs.rs](https://docs.rs/ssh-kmux)
 
-The package is `ssh-kmux`, the binary is `kmux`, and the minimum supported Rust version is 1.89. Linux is the supported platform.
+The package is `ssh-kmux`, the binary is `kmux`, and the minimum supported Rust
+version is 1.89. Linux is the supported platform.
 
 ## Basic Usage
 
@@ -55,7 +62,9 @@ kmux --scope company --comment aws --tag environment=production -- ssh deploy@ex
 kmux exec --key github-personal -- git fetch
 ```
 
-Filters are combined with AND. A parent scope matches keys in descendant scopes. See [selection](docs/selection.md) and the complete [CLI reference](docs/cli.md).
+Filters are combined with AND. A parent scope matches keys in descendant scopes.
+See [selection](docs/selection.md) and the complete
+[CLI reference](docs/cli.md).
 
 ## Configuration
 
@@ -79,20 +88,29 @@ provider = "aws"
 environment = "production"
 ```
 
-The [configuration reference](docs/configuration.md) documents discovery, validation, YAML and JSON support, and every field.
+The [configuration reference](docs/configuration.md) documents discovery,
+validation, YAML and JSON support, and every field.
 
 ## Security Model
 
-- Private keys stay in the upstream agent; only public identities are stored in configuration.
-- The proxy lists only selected public-key blobs and reauthorizes signing requests for them.
+- Private keys stay in the upstream agent; only public identities are stored in
+  configuration.
+- The proxy lists only selected public-key blobs and reauthorizes signing
+  requests for them.
 - Mutable, malformed, unknown, and unsupported protocol operations fail closed.
-- Each downstream connection receives a separate upstream connection and a private runtime socket.
+- Each downstream connection receives a separate upstream connection and a
+  private runtime socket.
 
 Read [security](docs/security.md) before relying on kmux for production access.
 
 ## Compatibility And Limitations
 
-kmux supports Unix-socket upstream agents on Linux. Agent forwarding and `session-bind@openssh.com` require upstream-agent support. Automated OpenSSH coverage verifies `ssh-add -L` and `ssh-add -T`; validate full `ssh -A` forwarding against your own host before production use. kmux does not synchronize Bitwarden folders, integrate with a vault CLI, or manage private keys.
+kmux supports Unix-socket upstream agents on Linux. Agent forwarding and
+`session-bind@openssh.com` require upstream-agent support. Automated OpenSSH
+coverage verifies `ssh-add -L` and `ssh-add -T`; validate full `ssh -A`
+forwarding against your own host before production use. kmux does not
+synchronize Bitwarden folders, integrate with a vault CLI, or manage private
+keys.
 
 ## Documentation
 
