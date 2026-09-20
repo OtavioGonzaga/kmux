@@ -43,6 +43,20 @@ impl FilterArgs {
 
 #[derive(Subcommand)]
 pub enum Command {
+    Init {
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
+        #[arg(long)]
+        force: bool,
+    },
+    Agent {
+        #[command(subcommand)]
+        command: AgentCommand,
+    },
+    Key {
+        #[command(subcommand)]
+        command: KeyCommand,
+    },
     Keys,
     Scopes,
     Doctor,
@@ -85,9 +99,41 @@ pub enum ConfigCommand {
     Check,
 }
 
+#[derive(Subcommand)]
+pub enum AgentCommand {
+    Add {
+        name: String,
+        #[arg(long)]
+        socket: PathBuf,
+    },
+    Remove {
+        name: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum KeyCommand {
+    Add {
+        alias: String,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long)]
+        fingerprint: Option<String>,
+        #[arg(long = "scope")]
+        scopes: Vec<String>,
+        #[arg(long = "tag", value_name = "KEY=VALUE")]
+        tags: Vec<String>,
+    },
+    Remove {
+        alias: String,
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command, ImportCommand, OutputFormat};
+    use super::{AgentCommand, Cli, Command, ImportCommand, KeyCommand, OutputFormat};
     use clap::Parser;
 
     #[test]
@@ -214,5 +260,59 @@ mod tests {
 
             assert_eq!(format, expected);
         }
+    }
+
+    #[test]
+    fn parses_mutating_commands_and_repeated_key_values() {
+        let init = Cli::try_parse_from(["kmux", "init", "--format", "yaml", "--force"]).unwrap();
+        assert!(matches!(
+            init.command,
+            Some(Command::Init {
+                format: Some(OutputFormat::Yaml),
+                force: true
+            })
+        ));
+
+        let agent = Cli::try_parse_from([
+            "kmux",
+            "agent",
+            "add",
+            "work",
+            "--socket",
+            "/tmp/agent.sock",
+        ])
+        .unwrap();
+        assert!(matches!(
+            agent.command,
+            Some(Command::Agent {
+                command: AgentCommand::Add { .. }
+            })
+        ));
+
+        let key = Cli::try_parse_from([
+            "kmux",
+            "key",
+            "add",
+            "deploy",
+            "--agent",
+            "work",
+            "--fingerprint",
+            "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y",
+            "--scope",
+            "company",
+            "--scope",
+            "production",
+            "--tag",
+            "provider=aws",
+        ])
+        .unwrap();
+        let Some(Command::Key {
+            command: KeyCommand::Add { scopes, tags, .. },
+        }) = key.command
+        else {
+            panic!("expected key add");
+        };
+        assert_eq!(scopes, ["company", "production"]);
+        assert_eq!(tags, ["provider=aws"]);
     }
 }
