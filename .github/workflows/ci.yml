@@ -23,6 +23,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: dprint/check@7dc032d8874778fc024f6f9b4a7e6d896782c330 # v2
         with:
+          dprint-version: 0.57.4
           cache: true
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
