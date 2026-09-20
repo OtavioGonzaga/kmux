@@ -80,8 +80,14 @@ pub enum Command {
 pub enum ImportCommand {
     Agent {
         name: String,
-        #[arg(long)]
-        scope: String,
+        #[arg(long = "scope")]
+        scopes: Vec<String>,
+        #[arg(long = "tag", value_name = "KEY=VALUE")]
+        tags: Vec<String>,
+        #[arg(long, conflicts_with = "stdout")]
+        dry_run: bool,
+        #[arg(long, conflicts_with = "dry_run")]
+        stdout: bool,
         #[arg(long, value_enum, default_value_t = OutputFormat::Toml)]
         format: OutputFormat,
     },
@@ -228,16 +234,16 @@ mod tests {
 
     #[test]
     fn import_defaults_to_toml_output() {
-        let cli = Cli::try_parse_from(["kmux", "import", "agent", "primary", "--scope", "company"])
-            .unwrap();
+        let cli = Cli::try_parse_from(["kmux", "import", "agent", "primary"]).unwrap();
         let Some(Command::Import {
-            command: ImportCommand::Agent { format, .. },
+            command: ImportCommand::Agent { format, scopes, .. },
         }) = cli.command
         else {
             panic!("expected import agent");
         };
 
         assert_eq!(format, OutputFormat::Toml);
+        assert!(scopes.is_empty());
     }
 
     #[test]
@@ -247,10 +253,9 @@ mod tests {
             ("yaml", OutputFormat::Yaml),
             ("json", OutputFormat::Json),
         ] {
-            let cli = Cli::try_parse_from([
-                "kmux", "import", "agent", "primary", "--scope", "company", "--format", value,
-            ])
-            .unwrap();
+            let cli =
+                Cli::try_parse_from(["kmux", "import", "agent", "primary", "--format", value])
+                    .unwrap();
             let Some(Command::Import {
                 command: ImportCommand::Agent { format, .. },
             }) = cli.command
@@ -260,6 +265,58 @@ mod tests {
 
             assert_eq!(format, expected);
         }
+    }
+
+    #[test]
+    fn parses_import_scopes_tags_and_modes() {
+        let cli = Cli::try_parse_from([
+            "kmux",
+            "import",
+            "agent",
+            "primary",
+            "--scope",
+            "company",
+            "--scope",
+            "production",
+            "--tag",
+            "provider=aws",
+            "--tag",
+            "environment=prod",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Some(Command::Import {
+            command:
+                ImportCommand::Agent {
+                    scopes,
+                    tags,
+                    dry_run,
+                    stdout,
+                    ..
+                },
+        }) = cli.command
+        else {
+            panic!("expected import agent");
+        };
+        assert_eq!(scopes, ["company", "production"]);
+        assert_eq!(tags, ["provider=aws", "environment=prod"]);
+        assert!(dry_run);
+        assert!(!stdout);
+    }
+
+    #[test]
+    fn import_modes_are_mutually_exclusive() {
+        assert!(
+            Cli::try_parse_from([
+                "kmux",
+                "import",
+                "agent",
+                "primary",
+                "--dry-run",
+                "--stdout"
+            ])
+            .is_err()
+        );
     }
 
     #[test]

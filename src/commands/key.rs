@@ -240,7 +240,9 @@ impl KeyPrompter for InquireKeyPrompter {
     }
 }
 
-fn parse_tags(tags: Vec<String>) -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
+pub(crate) fn parse_tags(
+    tags: Vec<String>,
+) -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
     let mut parsed = BTreeMap::new();
     for tag in tags {
         let Some((name, value)) = tag.split_once('=') else {
