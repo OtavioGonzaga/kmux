@@ -35,30 +35,30 @@ The project is Linux-only and pre-release. Validate its behavior with your upstr
 
 ## Configuration
 
-Use `--config`, `KMUX_CONFIG`, or one of `$XDG_CONFIG_HOME/kmux/config.yaml`, `config.yml`, `config.json`, or `config.toml`. YAML, JSON, and TOML use the same schema. Configuration files are limited to 1 MiB; YAML accepts anchors and aliases, but rejects duplicate keys and multiple documents.
+TOML is the recommended configuration format. Use `--config`, `KMUX_CONFIG`, or one of `$XDG_CONFIG_HOME/kmux/config.toml`, `config.yaml`, `config.yml`, or `config.json`. TOML, YAML, YML, and JSON use the same schema. Configuration files are limited to 1 MiB; YAML accepts anchors and aliases, but rejects duplicate keys and multiple documents.
 
-```yaml
-version: 1
-agents:
-  primary:
-    type: unix
-    socket: /run/user/1000/ssh-agent.sock
-keys:
-  company-production:
-    fingerprint: "SHA256:replace-with-public-fingerprint"
-    agent: primary
-    scopes: [company/production]
+```toml
+version = 1
+
+[agents.primary]
+type = "unix"
+socket = "/run/user/1000/ssh-agent.sock"
+
+[keys.company-production]
+fingerprint = "SHA256:replace-with-public-fingerprint"
+agent = "primary"
+scopes = ["company/production"]
 ```
 
 ## Commands
 
 ```bash
-kmux --config config.yaml config check
-kmux --config config.yaml doctor
-kmux --config config.yaml keys
-kmux --config config.yaml scopes
-kmux --config config.yaml import agent primary --scope company/production --format yaml
-kmux --config config.yaml -s company/production ssh deploy@example.com
+kmux --config config.toml config check
+kmux --config config.toml doctor
+kmux --config config.toml keys
+kmux --config config.toml scopes
+kmux --config config.toml import agent primary --scope company/production
+kmux --config config.toml -s company/production ssh deploy@example.com
 ```
 
 `scopes` lists configured scopes and their derived ancestors, in sorted order. `import agent` emits a configuration snippet only; it derives readable, deterministic aliases from public agent comments and never changes the configuration file.

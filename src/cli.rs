@@ -68,12 +68,12 @@ pub enum ImportCommand {
         name: String,
         #[arg(long)]
         scope: String,
-        #[arg(long, value_enum, default_value_t = OutputFormat::Yaml)]
+        #[arg(long, value_enum, default_value_t = OutputFormat::Toml)]
         format: OutputFormat,
     },
 }
 
-#[derive(Clone, ValueEnum)]
+#[derive(Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum OutputFormat {
     Yaml,
     Json,
@@ -87,7 +87,7 @@ pub enum ConfigCommand {
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, Command};
+    use super::{Cli, Command, ImportCommand, OutputFormat};
     use clap::Parser;
 
     #[test]
@@ -178,5 +178,41 @@ mod tests {
 
         assert_eq!(filters.scope.as_deref(), Some("hogix"));
         assert_eq!(command, ["ssh", "-v", "host"]);
+    }
+
+    #[test]
+    fn import_defaults_to_toml_output() {
+        let cli = Cli::try_parse_from(["kmux", "import", "agent", "primary", "--scope", "company"])
+            .unwrap();
+        let Some(Command::Import {
+            command: ImportCommand::Agent { format, .. },
+        }) = cli.command
+        else {
+            panic!("expected import agent");
+        };
+
+        assert_eq!(format, OutputFormat::Toml);
+    }
+
+    #[test]
+    fn import_accepts_every_supported_output_format() {
+        for (value, expected) in [
+            ("toml", OutputFormat::Toml),
+            ("yaml", OutputFormat::Yaml),
+            ("json", OutputFormat::Json),
+        ] {
+            let cli = Cli::try_parse_from([
+                "kmux", "import", "agent", "primary", "--scope", "company", "--format", value,
+            ])
+            .unwrap();
+            let Some(Command::Import {
+                command: ImportCommand::Agent { format, .. },
+            }) = cli.command
+            else {
+                panic!("expected import agent");
+            };
+
+            assert_eq!(format, expected);
+        }
     }
 }
