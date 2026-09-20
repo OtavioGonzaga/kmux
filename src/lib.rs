@@ -1,3 +1,5 @@
+#![warn(missing_docs)]
+
 //! Core types for building filtered SSH Agent workflows.
 //!
 //! The `kmux` binary resolves configured public identities, then exposes a

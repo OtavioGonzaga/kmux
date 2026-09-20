@@ -8,6 +8,7 @@ use std::str::FromStr;
 pub struct ScopeSegment(String);
 
 impl ScopeSegment {
+    /// Validates and lowercases a scope segment.
     pub fn new(value: impl AsRef<str>) -> Result<Self, ScopePathError> {
         let value = value.as_ref();
         if value.is_empty() {
@@ -20,6 +21,7 @@ impl ScopeSegment {
         Ok(Self(value.to_ascii_lowercase()))
     }
 
+    /// Returns the normalized segment.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -36,6 +38,7 @@ impl fmt::Display for ScopeSegment {
 pub struct ScopePath(Vec<ScopeSegment>);
 
 impl ScopePath {
+    /// Returns ordered scope segments.
     pub fn segments(&self) -> &[ScopeSegment] {
         &self.0
     }
@@ -50,6 +53,7 @@ impl ScopePath {
                 .all(|(left, right)| left == right)
     }
 
+    /// Iterates this scope's ancestors from root to itself.
     pub fn ancestors(&self) -> impl Iterator<Item = Self> + '_ {
         (1..=self.0.len()).map(|length| Self(self.0[..length].to_vec()))
     }

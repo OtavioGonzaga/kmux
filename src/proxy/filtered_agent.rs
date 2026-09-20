@@ -18,6 +18,7 @@ pub struct FilteredAgent {
 }
 
 impl FilteredAgent {
+    /// Creates a policy that permits only the supplied public-key blobs.
     pub fn new(
         upstream: UnixSocketAgent,
         allowed_blobs: impl IntoIterator<Item = Vec<u8>>,

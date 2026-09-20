@@ -151,6 +151,7 @@ pub fn choose_with(
     choose_with_mode(query, candidates, stdin().is_terminal(), chooser)
 }
 
+/// Applies selection behavior using an explicit interactive-mode flag.
 pub fn choose_with_mode(
     query: &KeyQuery,
     candidates: Vec<Candidate>,

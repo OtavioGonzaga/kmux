@@ -7,7 +7,7 @@ syntax. This reference explains when to use each command.
 
 ```bash
 kmux [FILTERS] [--] COMMAND...
-kmux exec [FILTERS] -- COMMAND...
+kmux exec [FILTERS] [--] COMMAND...
 ```
 
 Both forms resolve configured keys, create a private filtered agent for the
@@ -91,6 +91,7 @@ success.
 
 ## Configuration Path
 
-Every command except `init` can use `--config PATH` to select a document
-directly. Without it, use `KMUX_CONFIG` or normal XDG discovery as described in
+`--config PATH` is a root option. With `init`, it defines the configuration file
+to create; with every other command, it selects the configuration to load.
+Without it, use `KMUX_CONFIG` or normal XDG discovery as described in
 [configuration](configuration.md).

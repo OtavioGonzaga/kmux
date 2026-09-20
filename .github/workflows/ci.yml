@@ -27,6 +27,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-targets
+      - run: cargo test --doc
       - run: bash scripts/test-release-scripts.sh
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
       - run: cargo publish --dry-run --locked

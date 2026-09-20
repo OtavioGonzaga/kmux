@@ -23,7 +23,7 @@ Versioning.
   explicit snippet output modes.
 - Allow `kmux keys` to filter configured keys with the same reusable selection
   filters as command execution.
-- Expand user documentation and public Rust API Rustdocs.
+- Expand user documentation and public Rust API Rustdocs, enforced by CI.
 - Format project Markdown with dprint and verify it in CI.
 
 ## [0.1.0] - 2026-09-19
