@@ -105,7 +105,7 @@ fn import_persists_public_identities_and_is_idempotent() {
     let listener = UnixListener::bind(&upstream_socket).unwrap();
     let key_blob = b"persistent-import-key".to_vec();
     let worker = thread::spawn(move || {
-        for _ in 0..4 {
+        for _ in 0..5 {
             let (mut stream, _) = listener.accept().unwrap();
             assert_eq!(read_frame(&mut stream), [11]);
             let mut response = vec![12];
@@ -124,6 +124,25 @@ fn import_persists_public_identities_and_is_idempotent() {
         ),
     )
     .unwrap();
+
+    let original = std::fs::read_to_string(&config).unwrap();
+    let stdout_toml = Command::new(env!("CARGO_BIN_EXE_kmux"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "import",
+            "agent",
+            "test",
+            "--stdout",
+        ])
+        .output()
+        .unwrap();
+    assert!(stdout_toml.status.success());
+    let snippet = String::from_utf8(stdout_toml.stdout).unwrap();
+    assert!(snippet.contains("comment = \"Persistent Key\""));
+    assert!(!snippet.contains("scopes = []"));
+    assert!(!snippet.contains("[keys.persistent-key.tags]"));
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
 
     let first = Command::new(env!("CARGO_BIN_EXE_kmux"))
         .args([
@@ -145,6 +164,7 @@ fn import_persists_public_identities_and_is_idempotent() {
     assert!(persisted.contains("[keys.persistent-key]"));
     assert!(persisted.contains("scopes = [\"company\"]"));
     assert!(persisted.contains("source = \"test\""));
+    assert!(persisted.contains("comment = \"Persistent Key\""));
 
     let before_dry_run = persisted.clone();
     let dry_run = Command::new(env!("CARGO_BIN_EXE_kmux"))
@@ -160,6 +180,7 @@ fn import_persists_public_identities_and_is_idempotent() {
         .unwrap();
     assert!(dry_run.status.success());
     assert!(String::from_utf8_lossy(&dry_run.stdout).contains("dry run"));
+    assert!(String::from_utf8_lossy(&dry_run.stdout).contains("would be added"));
     assert_eq!(std::fs::read_to_string(&config).unwrap(), before_dry_run);
 
     let stdout = Command::new(env!("CARGO_BIN_EXE_kmux"))

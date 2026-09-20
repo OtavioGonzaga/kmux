@@ -101,7 +101,8 @@ fn plan_import(
                 name.clone(),
                 scopes.clone(),
                 tags.clone(),
-            );
+            )
+            .with_comment(identity.comment.clone());
             candidate.add_key(entry)?;
             Ok(ImportedKey { alias, identity })
         })
@@ -129,9 +130,10 @@ fn print_summary(name: &AgentName, plan: &ImportPlan, dry_run: bool) {
         println!("= {} already configured", plan.already_configured);
     }
     println!(
-        "{} key{} added, {} already configured",
+        "{} key{} {}, {} already configured",
         plan.additions.len(),
         if plan.additions.len() == 1 { "" } else { "s" },
+        if dry_run { "would be added" } else { "added" },
         plan.already_configured
     );
 }
@@ -145,8 +147,12 @@ struct SnippetDocument {
 struct SnippetKey {
     fingerprint: String,
     agent: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     scopes: Vec<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     tags: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    comment: Option<String>,
 }
 
 fn render_import(
@@ -166,6 +172,11 @@ fn render_import(
                     agent: name.to_string(),
                     scopes: scopes.iter().map(ToString::to_string).collect(),
                     tags: tags.clone(),
+                    comment: imported
+                        .identity
+                        .comment
+                        .clone()
+                        .filter(|comment| !comment.is_empty()),
                 },
             )
         })
@@ -321,8 +332,11 @@ mod tests {
         let _: toml::Value = toml::from_str(&toml).unwrap();
         assert!(toml.contains("company"));
         assert!(toml.contains("source = \"test\""));
+        assert!(toml.contains("comment = \"public key\""));
         let yaml =
             render_import(&imported, &name, &[], &BTreeMap::new(), OutputFormat::Yaml).unwrap();
+        assert!(!yaml.contains("scopes:"));
+        assert!(!yaml.contains("tags:"));
         let _: serde_json::Value = serde_saphyr::from_str(&yaml).unwrap();
         let json =
             render_import(&imported, &name, &[], &BTreeMap::new(), OutputFormat::Json).unwrap();

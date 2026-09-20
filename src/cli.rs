@@ -88,8 +88,8 @@ pub enum ImportCommand {
         dry_run: bool,
         #[arg(long, conflicts_with = "dry_run")]
         stdout: bool,
-        #[arg(long, value_enum, default_value_t = OutputFormat::Toml)]
-        format: OutputFormat,
+        #[arg(long, value_enum, requires = "stdout")]
+        format: Option<OutputFormat>,
     },
 }
 
@@ -125,6 +125,8 @@ pub enum KeyCommand {
         agent: Option<String>,
         #[arg(long)]
         fingerprint: Option<String>,
+        #[arg(long)]
+        comment: Option<String>,
         #[arg(long = "scope")]
         scopes: Vec<String>,
         #[arg(long = "tag", value_name = "KEY=VALUE")]
@@ -242,7 +244,7 @@ mod tests {
             panic!("expected import agent");
         };
 
-        assert_eq!(format, OutputFormat::Toml);
+        assert_eq!(format, None);
         assert!(scopes.is_empty());
     }
 
@@ -253,9 +255,10 @@ mod tests {
             ("yaml", OutputFormat::Yaml),
             ("json", OutputFormat::Json),
         ] {
-            let cli =
-                Cli::try_parse_from(["kmux", "import", "agent", "primary", "--format", value])
-                    .unwrap();
+            let cli = Cli::try_parse_from([
+                "kmux", "import", "agent", "primary", "--stdout", "--format", value,
+            ])
+            .unwrap();
             let Some(Command::Import {
                 command: ImportCommand::Agent { format, .. },
             }) = cli.command
@@ -263,7 +266,7 @@ mod tests {
                 panic!("expected import agent");
             };
 
-            assert_eq!(format, expected);
+            assert_eq!(format, Some(expected));
         }
     }
 
@@ -320,6 +323,14 @@ mod tests {
     }
 
     #[test]
+    fn import_format_requires_stdout() {
+        assert!(
+            Cli::try_parse_from(["kmux", "import", "agent", "primary", "--format", "yaml"])
+                .is_err()
+        );
+    }
+
+    #[test]
     fn parses_mutating_commands_and_repeated_key_values() {
         let init = Cli::try_parse_from(["kmux", "init", "--format", "yaml", "--force"]).unwrap();
         assert!(matches!(
@@ -371,5 +382,26 @@ mod tests {
         };
         assert_eq!(scopes, ["company", "production"]);
         assert_eq!(tags, ["provider=aws"]);
+
+        let key_with_comment = Cli::try_parse_from([
+            "kmux",
+            "key",
+            "add",
+            "deploy",
+            "--agent",
+            "work",
+            "--fingerprint",
+            "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y",
+            "--comment",
+            "Production deployment key",
+        ])
+        .unwrap();
+        let Some(Command::Key {
+            command: KeyCommand::Add { comment, .. },
+        }) = key_with_comment.command
+        else {
+            panic!("expected key add");
+        };
+        assert_eq!(comment.as_deref(), Some("Production deployment key"));
     }
 }
