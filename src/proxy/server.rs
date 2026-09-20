@@ -1,3 +1,5 @@
+//! Unix-socket listener lifecycle for a [`super::FilteredAgent`].
+
 use super::{FilteredAgent, ProxyError};
 use std::collections::BTreeMap;
 use std::io;
@@ -21,6 +23,7 @@ struct ConnectionSession {
     upstream: Option<UnixStream>,
 }
 
+/// A running filtered SSH Agent Unix-socket server.
 pub struct ProxyServer {
     path: PathBuf,
     running: Arc<AtomicBool>,
@@ -29,6 +32,7 @@ pub struct ProxyServer {
 }
 
 impl ProxyServer {
+    /// Binds a filtered agent to `path` and starts accepting connections.
     pub fn bind(path: impl Into<PathBuf>, agent: FilteredAgent) -> Result<Self, ProxyError> {
         let path = path.into();
         let listener = UnixListener::bind(&path).map_err(ProxyError::Io)?;
@@ -104,10 +108,12 @@ impl ProxyServer {
         })
     }
 
+    /// Returns the listening Unix socket path.
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    /// Stops the listener, closes active connections, and removes the socket.
     pub fn shutdown(&mut self) {
         self.running.store(false, Ordering::Release);
         let _ = UnixStream::connect(&self.path);

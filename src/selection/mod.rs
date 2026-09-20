@@ -1,3 +1,9 @@
+//! Resolution of configured keys against identities available upstream.
+//!
+//! Static catalog filters are applied before upstream agents are contacted.
+//! Call `choose_with` to apply kmux's zero, one, and many-candidate
+//! selection behavior.
+
 use crate::agent::{UnixSocketAgent, UpstreamAgent};
 use crate::catalog::{Identity, KeyEntry, KeyQuery, QueryMatch};
 use crate::config::Config;
@@ -7,9 +13,13 @@ use std::fmt;
 use std::io::{IsTerminal, stdin};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A configured key paired with an available upstream public identity.
 pub struct Candidate {
+    /// The configured catalog entry.
     pub entry: KeyEntry,
+    /// The matching identity currently advertised by the upstream agent.
     pub identity: Identity,
+    /// The configured scope that matched the query, if one was requested.
     pub matched_scope: Option<crate::scope::ScopePath>,
 }
 
@@ -58,6 +68,7 @@ fn sanitize_comment(comment: &str) -> String {
     sanitized
 }
 
+/// Resolves static matches against the public identities currently upstream.
 pub fn resolve(config: &Config, query: &KeyQuery) -> Result<Vec<Candidate>, SelectionError> {
     validate_agent(config, query)?;
     let entries = config.catalog().query_static(query);
@@ -79,6 +90,7 @@ pub fn resolve(config: &Config, query: &KeyQuery) -> Result<Vec<Candidate>, Sele
     Ok(resolve_available(entries, &available))
 }
 
+/// Verifies that an agent query names an agent present in configuration.
 pub fn validate_agent(config: &Config, query: &KeyQuery) -> Result<(), SelectionError> {
     if let Some(agent) = query.agent()
         && !config.agents().contains_key(agent)
@@ -88,6 +100,7 @@ pub fn validate_agent(config: &Config, query: &KeyQuery) -> Result<(), Selection
     Ok(())
 }
 
+/// Intersects static query matches with identities collected from each agent.
 pub fn resolve_available(
     entries: Vec<QueryMatch<'_>>,
     available: &BTreeMap<crate::agent::AgentName, Vec<Identity>>,
@@ -109,13 +122,17 @@ pub fn resolve_available(
         .collect()
 }
 
+/// Chooses a candidate using the controlling terminal when necessary.
 pub fn choose(query: &KeyQuery, candidates: Vec<Candidate>) -> Result<Candidate, SelectionError> {
     choose_with(query, candidates, &InquireCandidateChooser)
 }
 
+/// An interactive policy for selecting one candidate among several.
 pub trait CandidateChooser {
+    /// Selects exactly one candidate or returns a selection error.
     fn choose(&self, candidates: Vec<Candidate>) -> Result<Candidate, SelectionError>;
 }
+/// The standard terminal chooser implemented with `inquire`.
 pub struct InquireCandidateChooser;
 impl CandidateChooser for InquireCandidateChooser {
     fn choose(&self, candidates: Vec<Candidate>) -> Result<Candidate, SelectionError> {
@@ -125,6 +142,7 @@ impl CandidateChooser for InquireCandidateChooser {
     }
 }
 
+/// Applies selection behavior with a caller-provided chooser.
 pub fn choose_with(
     query: &KeyQuery,
     candidates: Vec<Candidate>,
@@ -133,6 +151,7 @@ pub fn choose_with(
     choose_with_mode(query, candidates, stdin().is_terminal(), chooser)
 }
 
+/// Applies selection behavior using an explicit interactive-mode flag.
 pub fn choose_with_mode(
     query: &KeyQuery,
     candidates: Vec<Candidate>,
@@ -154,12 +173,19 @@ pub fn choose_with_mode(
 }
 
 #[derive(Debug)]
+/// Failure while resolving or choosing a configured identity.
 pub enum SelectionError {
+    /// Upstream-agent communication failed.
     Agent(crate::agent::AgentError),
+    /// No configured identities satisfied the query and availability check.
     NoCandidates(Box<KeyQuery>),
+    /// Multiple candidates matched without a usable interactive terminal.
     Ambiguous(Box<KeyQuery>, Vec<String>),
+    /// The interactive chooser failed.
     Prompt(String),
+    /// A catalog entry referenced an agent absent from the configuration.
     MissingAgent(crate::agent::AgentName),
+    /// The query named an agent absent from the configuration.
     UnknownAgent(crate::agent::AgentName),
 }
 impl From<crate::agent::AgentError> for SelectionError {

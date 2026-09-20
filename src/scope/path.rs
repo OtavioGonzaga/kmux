@@ -1,10 +1,14 @@
+//! Validated slash-separated scope paths.
+
 use std::fmt;
 use std::str::FromStr;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// One normalized component of a [`ScopePath`].
 pub struct ScopeSegment(String);
 
 impl ScopeSegment {
+    /// Validates and lowercases a scope segment.
     pub fn new(value: impl AsRef<str>) -> Result<Self, ScopePathError> {
         let value = value.as_ref();
         if value.is_empty() {
@@ -17,6 +21,7 @@ impl ScopeSegment {
         Ok(Self(value.to_ascii_lowercase()))
     }
 
+    /// Returns the normalized segment.
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -29,9 +34,11 @@ impl fmt::Display for ScopeSegment {
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// A normalized hierarchical scope path.
 pub struct ScopePath(Vec<ScopeSegment>);
 
 impl ScopePath {
+    /// Returns ordered scope segments.
     pub fn segments(&self) -> &[ScopeSegment] {
         &self.0
     }
@@ -46,6 +53,7 @@ impl ScopePath {
                 .all(|(left, right)| left == right)
     }
 
+    /// Iterates this scope's ancestors from root to itself.
     pub fn ancestors(&self) -> impl Iterator<Item = Self> + '_ {
         (1..=self.0.len()).map(|length| Self(self.0[..length].to_vec()))
     }
@@ -80,9 +88,13 @@ impl fmt::Display for ScopePath {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A scope-path validation error.
 pub enum ScopePathError {
+    /// The whole path was empty.
     EmptyPath,
+    /// A slash produced an empty path segment.
     EmptySegment,
+    /// A segment contained unsupported characters.
     InvalidSegment(String),
 }
 

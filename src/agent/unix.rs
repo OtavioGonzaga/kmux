@@ -1,3 +1,5 @@
+//! Unix-domain implementation of the SSH Agent client protocol.
+
 use crate::catalog::{Fingerprint, Identity};
 use std::fmt;
 use std::io::{Read, Write};
@@ -8,23 +10,29 @@ const REQUEST_IDENTITIES: u8 = 11;
 const IDENTITIES_ANSWER: u8 = 12;
 const MAX_MESSAGE_SIZE: usize = 256 * 1024;
 
+/// An SSH Agent that can enumerate public identities and open a connection.
 pub trait UpstreamAgent {
+    /// Retrieves the identities currently advertised by the agent.
     fn identities(&self) -> Result<Vec<Identity>, AgentError>;
+    /// Opens a raw connection to the upstream agent.
     fn connect(&self) -> Result<UnixStream, AgentError>;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// An upstream SSH Agent addressed by a Unix socket.
 pub struct UnixSocketAgent {
     socket: PathBuf,
 }
 
 impl UnixSocketAgent {
+    /// Creates an agent client for `socket`.
     pub fn new(socket: impl Into<PathBuf>) -> Self {
         Self {
             socket: socket.into(),
         }
     }
 
+    /// Returns the configured socket path.
     pub fn socket(&self) -> &Path {
         &self.socket
     }
@@ -65,10 +73,15 @@ impl UpstreamAgent for UnixSocketAgent {
 }
 
 #[derive(Debug)]
+/// Failure while communicating with an upstream SSH Agent.
 pub enum AgentError {
+    /// Connecting to the Unix socket failed.
     Connect(std::io::Error),
+    /// Reading or writing an agent frame failed.
     Io(std::io::Error),
+    /// The agent returned a message of the wrong kind.
     UnexpectedResponse,
+    /// The agent returned an invalid or oversized message.
     MalformedResponse,
 }
 

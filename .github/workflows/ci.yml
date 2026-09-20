@@ -21,9 +21,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: dprint/check@7dc032d8874778fc024f6f9b4a7e6d896782c330 # v2
+        with:
+          dprint-version: 0.57.4
+          cache: true
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-targets
+      - run: cargo test --doc
       - run: bash scripts/test-release-scripts.sh
       - run: RUSTDOCFLAGS="-D warnings" cargo doc --no-deps
       - run: cargo publish --dry-run --locked

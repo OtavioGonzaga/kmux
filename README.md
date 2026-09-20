@@ -1,41 +1,74 @@
 # kmux
 
-`kmux` runs one command with a filtered view of an existing SSH agent. It never reads, exports, or persists private keys.
+`kmux` runs a command with a filtered view of an existing SSH agent. It is
+useful when an upstream agent exposes many SSH identities and clients such as
+OpenSSH try more identities than a remote server permits.
+
+`kmux` never reads, exports, or stores private keys. It proxies the SSH Agent
+protocol and presents only selected configured public identities to the child
+process.
+
+## Quick Start
+
+```bash
+# Install the crate named ssh-kmux; its executable is named kmux.
+cargo install ssh-kmux --locked
+
+# Create ~/.config/kmux/config.toml.
+kmux init
+
+# Register the Unix socket supplied by an existing SSH agent.
+kmux agent add bitwarden --socket /run/user/1000/bitwarden-ssh-agent.sock
+
+# Import that agent's public identities and classify them for selection.
+kmux import agent bitwarden --scope personal
+
+# Inspect the local catalog before using it.
+kmux keys
+
+# Run OpenSSH with only identities in the personal scope exposed.
+kmux --scope personal -- ssh user@example.com
+```
+
+The upstream agent can be Bitwarden, `ssh-agent`, or another compatible
+Unix-socket agent. See the [getting started guide](docs/getting-started.md) for
+an explained workflow.
 
 ## Installation
 
-### Cargo
+- [Cargo, Debian/Ubuntu, tarball, and source installation](docs/installation.md)
+- [Latest GitHub Release](https://github.com/OtavioGonzaga/kmux/releases/latest)
+- [Rust API on docs.rs](https://docs.rs/ssh-kmux)
+
+The package is `ssh-kmux`, the binary is `kmux`, and the minimum supported Rust
+version is 1.89. Linux is the supported platform.
+
+## Basic Usage
 
 ```bash
-cargo install ssh-kmux
-kmux --version
+# Validate the discovered configuration and upstream agents.
+kmux doctor
+
+# List configured keys locally; this never contacts an agent.
+kmux keys --scope company --tag environment=production
+
+# List scopes, including derived ancestors.
+kmux scopes
+
+# Filter command execution by scope, local comment, and tags.
+kmux --scope company --comment aws --tag environment=production -- ssh deploy@example.com
+
+# The explicit form is useful when a wrapper needs an unambiguous subcommand.
+kmux exec --key github-personal -- git fetch
 ```
 
-### Debian/Ubuntu
-
-Download the architecture-appropriate `.deb` from the GitHub Release, then install it:
-
-```bash
-sudo dpkg -i kmux_<version>_amd64.deb
-```
-
-### Direct Download
-
-GitHub Releases provide `kmux-linux-x86_64.tar.gz` and `kmux-linux-aarch64.tar.gz`.
-
-```bash
-curl -LO https://github.com/OtavioGonzaga/kmux/releases/latest/download/kmux-linux-x86_64.tar.gz
-tar -xzf kmux-linux-x86_64.tar.gz
-./kmux --version
-```
-
-## Status
-
-The project is Linux-only and pre-release. Validate its behavior with your upstream agent before relying on it for production access.
+Filters are combined with AND. A parent scope matches keys in descendant scopes.
+See [selection](docs/selection.md) and the complete
+[CLI reference](docs/cli.md).
 
 ## Configuration
 
-TOML is the recommended configuration format. Use `--config`, `KMUX_CONFIG`, or one of `$XDG_CONFIG_HOME/kmux/config.toml`, `config.yaml`, `config.yml`, or `config.json`. TOML, YAML, YML, and JSON use the same schema. Configuration files are limited to 1 MiB; YAML accepts anchors and aliases, but rejects duplicate keys and multiple documents.
+TOML is the recommended configuration format:
 
 ```toml
 version = 1
@@ -45,47 +78,52 @@ type = "unix"
 socket = "/run/user/1000/ssh-agent.sock"
 
 [keys.company-production]
-fingerprint = "SHA256:replace-with-public-fingerprint"
+fingerprint = "SHA256:replace-with-a-public-key-fingerprint"
 agent = "primary"
 scopes = ["company/production"]
+comment = "AWS production"
+
+[keys.company-production.tags]
+provider = "aws"
+environment = "production"
 ```
 
-## Commands
+The [configuration reference](docs/configuration.md) documents discovery,
+validation, YAML and JSON support, and every field.
 
-```bash
-kmux --config config.toml config check
-kmux --config config.toml doctor
-kmux --config config.toml keys
-kmux --config config.toml keys --scope company --tag environment=production
-kmux --config config.toml scopes
-kmux init
-kmux agent add primary --socket /run/user/1000/ssh-agent.sock
-kmux key add company-production --agent primary --fingerprint SHA256:replace-with-public-fingerprint --scope company/production
-kmux --config config.toml import agent primary --scope company/production
-kmux --config config.toml -s company/production ssh deploy@example.com
-```
+## Security Model
 
-`scopes` lists configured scopes and their derived ancestors, in sorted order. `import agent` imports public identities into the configuration by default, skipping fingerprints that are already present. It stores the public agent comment as local key metadata for display and `--comment` filtering. Use `--dry-run` to preview changes without writing, or `--stdout` to emit a TOML/YAML/JSON configuration snippet without writing. Aliases are derived deterministically from public agent comments.
+- Private keys stay in the upstream agent; only public identities are stored in
+  configuration.
+- The proxy lists only selected public-key blobs and reauthorizes signing
+  requests for them.
+- Mutable, malformed, unknown, and unsupported protocol operations fail closed.
+- Each downstream connection receives a separate upstream connection and a
+  private runtime socket.
 
-`kmux init` creates a minimal TOML configuration by default and is idempotent when a supported configuration already exists. `agent add` and `key add` validate the complete configuration before replacing it atomically. Run `key add ALIAS` without data flags to choose a configured agent and public identity interactively; supplying any key data flag requires both `--agent` and `--fingerprint` and never prompts.
+Read [security](docs/security.md) before relying on kmux for production access.
 
-`kmux keys [FILTERS]` lists configured keys using the same scope, comment, alias, fingerprint, tag, and agent filters as command execution. These queries use local configuration metadata and do not contact the upstream SSH agent.
+## Compatibility And Limitations
 
-`kmux [FILTERS] [--] COMMAND...` creates a private, per-execution temporary directory for its Unix socket, passes it to the child only through `SSH_AUTH_SOCK`, and removes it after the child exits. The `--` separator is optional. Without filters, it considers every configured key. A parent scope matches keys declared in that scope and descendant scopes; a child scope does not implicitly select ancestor keys. When more than one key matches, `kmux` selects through the controlling terminal when one is available (including when command output is piped); otherwise it reports the candidate list. The child exit code is preserved. `kmux exec -s company/production [--] COMMAND...` remains available as the explicit form.
+kmux supports Unix-socket upstream agents on Linux. Agent forwarding and
+`session-bind@openssh.com` require upstream-agent support. Automated OpenSSH
+coverage verifies `ssh-add -L` and `ssh-add -T`; validate full `ssh -A`
+forwarding against your own host before production use. kmux does not
+synchronize Bitwarden folders, integrate with a vault CLI, or manage private
+keys.
 
-## Security
+## Documentation
 
-- Private keys stay in the upstream agent.
-- Only selected public-key blobs are listed and authorized for signing.
-- Mutable and unknown agent operations fail closed.
-- Each downstream connection receives a distinct upstream connection.
-- `session-bind@openssh.com` is forwarded on that connection; unsupported extensions are rejected.
-- Shutting down the proxy closes active downstream and upstream connections before removing its socket.
-
-## Limitations
-
-Agent forwarding and `session-bind` require upstream-agent support. The automated OpenSSH coverage verifies `ssh-add -L` and `ssh-add -T`; full `ssh -A` forwarding remains a manual integration check. To verify it against a host that accepts forwarding, run `kmux -s <scope> -- ssh -A <host> ssh-add -L` and confirm only the selected public key is listed. Bitwarden and other upstream integrations must be validated manually before production use.
+- [Getting started](docs/getting-started.md)
+- [Installation](docs/installation.md)
+- [Configuration](docs/configuration.md)
+- [CLI reference](docs/cli.md)
+- [Selection](docs/selection.md)
+- [Upstream agents](docs/agents.md)
+- [Security](docs/security.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Releasing](docs/releasing.md)
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

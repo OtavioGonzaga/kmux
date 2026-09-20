@@ -1,3 +1,5 @@
+//! Static matching for configured public-key entries.
+
 use super::{Fingerprint, KeyAlias, KeyEntry};
 use crate::agent::AgentName;
 use crate::scope::ScopePath;
@@ -6,6 +8,7 @@ use std::fmt;
 use std::str::FromStr;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// A validated set of AND-combined catalog filters.
 pub struct KeyQuery {
     scope: Option<ScopePath>,
     comment: Option<String>,
@@ -16,6 +19,7 @@ pub struct KeyQuery {
 }
 
 impl KeyQuery {
+    /// Builds a query from CLI-shaped optional values.
     pub fn from_values(
         scope: Option<String>,
         comment: Option<String>,
@@ -50,10 +54,12 @@ impl KeyQuery {
         })
     }
 
+    /// Returns the requested agent filter, if any.
     pub fn agent(&self) -> Option<&AgentName> {
         self.agent.as_ref()
     }
 
+    /// Returns the matched scope when `entry` satisfies every filter.
     pub fn matches_entry(&self, entry: &KeyEntry) -> Option<Option<ScopePath>> {
         let matched_scope = match &self.scope {
             Some(scope) => entry
@@ -150,11 +156,17 @@ fn parse_tag(value: String) -> Result<(String, String), QueryError> {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// An invalid catalog-query input.
 pub enum QueryError {
+    /// The scope filter was invalid.
     Scope(crate::scope::ScopePathError),
+    /// The alias filter was invalid.
     Key(super::KeyAliasError),
+    /// The agent filter was invalid.
     Agent(crate::agent::AgentNameError),
+    /// The fingerprint prefix contained unsupported characters.
     FingerprintPrefix,
+    /// A tag was not non-empty `KEY=VALUE` syntax.
     Tag(String),
 }
 
@@ -178,18 +190,23 @@ impl fmt::Display for QueryError {
 impl std::error::Error for QueryError {}
 
 #[derive(Clone, Debug)]
+/// A catalog entry and the scope that caused it to match.
 pub struct QueryMatch<'a> {
+    /// The matching configured entry.
     pub entry: &'a KeyEntry,
+    /// The matching configured scope for a scope query.
     pub matched_scope: Option<ScopePath>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// A validated collection of unique configured public identities.
 pub struct KeyCatalog {
     entries: BTreeMap<KeyAlias, KeyEntry>,
     fingerprints: BTreeSet<Fingerprint>,
 }
 
 impl KeyCatalog {
+    /// Creates a catalog, rejecting duplicate aliases and fingerprints.
     pub fn from_entries(
         entries: impl IntoIterator<Item = KeyEntry>,
     ) -> Result<Self, KeyCatalogError> {
@@ -200,6 +217,7 @@ impl KeyCatalog {
         Ok(catalog)
     }
 
+    /// Inserts an entry, rejecting duplicate aliases and fingerprints.
     pub fn insert(&mut self, entry: KeyEntry) -> Result<(), KeyCatalogError> {
         if self.entries.contains_key(entry.alias()) {
             return Err(KeyCatalogError::DuplicateAlias(entry.alias().clone()));
@@ -214,13 +232,16 @@ impl KeyCatalog {
         Ok(())
     }
 
+    /// Finds an entry by normalized alias.
     pub fn get(&self, alias: &KeyAlias) -> Option<&KeyEntry> {
         self.entries.get(alias)
     }
+    /// Iterates entries in alias order.
     pub fn entries(&self) -> impl Iterator<Item = &KeyEntry> {
         self.entries.values()
     }
 
+    /// Applies a query without communicating with an upstream agent.
     pub fn query_static(&self, query: &KeyQuery) -> Vec<QueryMatch<'_>> {
         self.entries
             .values()
@@ -235,8 +256,11 @@ impl KeyCatalog {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A duplicate-value error while building a catalog.
 pub enum KeyCatalogError {
+    /// An alias was already present.
     DuplicateAlias(KeyAlias),
+    /// A fingerprint was already present.
     DuplicateFingerprint(Fingerprint),
 }
 

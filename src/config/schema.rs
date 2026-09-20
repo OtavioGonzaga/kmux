@@ -1,3 +1,5 @@
+//! The serialized configuration schema and its filesystem store.
+
 use crate::agent::{AgentDefinition, AgentName};
 use crate::catalog::{Fingerprint, KeyAlias, KeyCatalog, KeyEntry};
 use crate::scope::ScopePath;
@@ -26,16 +28,19 @@ const MAX_YAML_ALIAS_EXPANSIONS_PER_ANCHOR: usize = 256;
 const SUPPORTED_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Validated runtime configuration containing agents and a key catalog.
 pub struct Config {
     agents: BTreeMap<AgentName, AgentDefinition>,
     catalog: KeyCatalog,
 }
 
 impl Config {
+    /// Loads, parses, and validates the document at `path`.
     pub fn load(path: &Path) -> Result<Self, ConfigError> {
         ConfigStore::load(path)?.validate()
     }
 
+    /// Discovers a configuration path from an explicit path, environment, or XDG defaults.
     pub fn discover(explicit: Option<&Path>) -> Result<ConfigPath, ConfigError> {
         ConfigStore::discover(explicit)
     }
@@ -116,23 +121,30 @@ impl Config {
         Ok(Self { agents, catalog })
     }
 
+    /// Returns configured upstream agents keyed by normalized name.
     pub fn agents(&self) -> &BTreeMap<AgentName, AgentDefinition> {
         &self.agents
     }
 
+    /// Returns the validated catalog of configured public identities.
     pub fn catalog(&self) -> &KeyCatalog {
         &self.catalog
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A supported serialized configuration format.
 pub enum ConfigFormat {
+    /// TOML configuration.
     Toml,
+    /// YAML or YML configuration.
     Yaml,
+    /// JSON configuration.
     Json,
 }
 
 impl ConfigFormat {
+    /// Infers a supported format from `path`'s extension.
     pub fn from_path(path: &Path) -> Result<Self, ConfigError> {
         match path.extension().and_then(|extension| extension.to_str()) {
             Some("toml") => Ok(Self::Toml),
@@ -142,6 +154,7 @@ impl ConfigFormat {
         }
     }
 
+    /// Returns this format's canonical file extension.
     pub fn extension(self) -> &'static str {
         match self {
             Self::Toml => "toml",
@@ -153,6 +166,7 @@ impl ConfigFormat {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Mutable serialized configuration that can be validated or persisted.
 pub struct ConfigDocument {
     version: u32,
     #[serde(default)]
@@ -162,6 +176,7 @@ pub struct ConfigDocument {
 }
 
 impl ConfigDocument {
+    /// Creates an empty version-1 configuration document.
     pub fn empty() -> Self {
         Self {
             version: SUPPORTED_VERSION,
@@ -170,6 +185,7 @@ impl ConfigDocument {
         }
     }
 
+    /// Validates this document and returns its runtime representation.
     pub fn validate(&self) -> Result<Config, ConfigError> {
         Config::from_document(self.clone())
     }
@@ -181,6 +197,7 @@ impl ConfigDocument {
         self
     }
 
+    /// Adds an agent after validating the resulting document.
     pub fn add_agent(&mut self, name: AgentName, socket: PathBuf) -> Result<(), ConfigError> {
         if self.agents.keys().any(|existing| {
             AgentName::new(existing).expect("loaded configuration has valid agent names") == name
@@ -200,6 +217,7 @@ impl ConfigDocument {
         Ok(())
     }
 
+    /// Removes an agent that is not referenced by any configured key.
     pub fn remove_agent(&mut self, name: &AgentName) -> Result<(), ConfigError> {
         let dependents = self
             .keys
@@ -224,6 +242,7 @@ impl ConfigDocument {
         Ok(())
     }
 
+    /// Adds a key entry after validating the resulting document.
     pub fn add_key(&mut self, entry: KeyEntry) -> Result<(), ConfigError> {
         if self.keys.keys().any(|existing| {
             KeyAlias::new(existing).expect("loaded configuration has valid key aliases")
@@ -250,6 +269,7 @@ impl ConfigDocument {
         Ok(())
     }
 
+    /// Removes a configured key by alias.
     pub fn remove_key(&mut self, alias: &KeyAlias) -> Result<(), ConfigError> {
         let key = self
             .keys
@@ -265,15 +285,18 @@ impl ConfigDocument {
     }
 }
 
+/// Loads, discovers, and atomically persists configuration documents.
 pub struct ConfigStore;
 
 impl ConfigStore {
+    /// Returns an explicit CLI path or the `KMUX_CONFIG` environment path.
     pub fn explicit_path(explicit: Option<&Path>) -> Option<PathBuf> {
         explicit
             .map(Path::to_owned)
             .or_else(|| env::var_os(CONFIG_ENV).map(PathBuf::from))
     }
 
+    /// Returns the default XDG TOML configuration path.
     pub fn default_path() -> Result<PathBuf, ConfigError> {
         let config_home = env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
@@ -282,6 +305,7 @@ impl ConfigStore {
         Ok(config_home.join("kmux").join("config.toml"))
     }
 
+    /// Loads and validates a serialized configuration document.
     pub fn load(path: &Path) -> Result<ConfigDocument, ConfigError> {
         let decoder: &dyn ConfigDecoder = match ConfigFormat::from_path(path)? {
             ConfigFormat::Yaml => &YamlConfigDecoder,
@@ -293,6 +317,7 @@ impl ConfigStore {
         Ok(document)
     }
 
+    /// Validates and atomically writes a document with private permissions.
     pub fn save(path: &Path, document: &ConfigDocument) -> Result<(), ConfigError> {
         let document = document.clone().normalized();
         document.validate()?;
@@ -355,6 +380,7 @@ impl ConfigStore {
         Ok(())
     }
 
+    /// Discovers a configured or default configuration path.
     pub fn discover(explicit: Option<&Path>) -> Result<ConfigPath, ConfigError> {
         if let Some(path) = Self::explicit_path(explicit) {
             return Ok(ConfigPath(path));
@@ -367,6 +393,7 @@ impl ConfigStore {
         Self::discover_in(directory)
     }
 
+    /// Discovers exactly one supported configuration file in `directory`.
     pub fn discover_in(directory: PathBuf) -> Result<ConfigPath, ConfigError> {
         let candidates = ["config.yaml", "config.yml", "config.json", "config.toml"]
             .into_iter()
@@ -383,39 +410,63 @@ impl ConfigStore {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A discovered configuration filesystem path.
 pub struct ConfigPath(PathBuf);
 
 impl ConfigPath {
+    /// Returns the underlying filesystem path.
     pub fn as_path(&self) -> &Path {
         &self.0
     }
 }
 
 #[derive(Debug)]
+/// An error loading, validating, discovering, or saving configuration.
 pub enum ConfigError {
+    /// Reading a configuration file failed.
     Read {
+        /// Path that could not be read.
         path: PathBuf,
+        /// Underlying filesystem error.
         source: std::io::Error,
     },
+    /// A configuration file or serialized output exceeded its size limit.
     TooLarge {
+        /// Path associated with the oversized content.
         path: PathBuf,
+        /// Maximum permitted byte length.
         limit: usize,
     },
+    /// Parsing serialized configuration failed.
     Parse(String),
+    /// A configuration path has an unsupported extension.
     UnsupportedFormat(PathBuf),
+    /// Neither `XDG_CONFIG_HOME` nor `HOME` was available for discovery.
     ConfigHomeUnavailable,
+    /// No supported configuration file was found in this directory.
     ConfigNotFound(PathBuf),
+    /// More than one supported configuration file was found.
     AmbiguousConfig(Vec<PathBuf>),
+    /// The document schema version is unsupported.
     UnsupportedVersion(u32),
+    /// Agent names collided after normalization.
     DuplicateAgent(AgentName),
+    /// A referenced or requested agent is absent.
     UnknownAgent(AgentName),
+    /// An agent cannot be removed while these key aliases reference it.
     AgentInUse(AgentName, Vec<String>),
+    /// A requested key alias is absent.
     UnknownKey(KeyAlias),
+    /// Serializing a configuration document failed.
     Serialize(String),
+    /// Writing a configuration file failed.
     Write {
+        /// Path that could not be written.
         path: PathBuf,
+        /// Underlying filesystem error.
         source: std::io::Error,
     },
+    /// The document violated a schema validation rule.
     Validation(String),
 }
 
