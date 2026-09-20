@@ -8,6 +8,7 @@ The format is based on Keep a Changelog, and this project adheres to Semantic Ve
 
 ### Changed
 
+- Make TOML the default format for generated configuration snippets while retaining YAML and JSON support.
 - Allow filtered command execution without scopes through `kmux [FILTERS] [--] COMMAND...`.
 - Add reusable key filters for scopes, comments, aliases, fingerprints, tags, and agents.
 - Allow configured keys without scopes while preserving filtered SSH-agent isolation.

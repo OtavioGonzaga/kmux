@@ -396,29 +396,20 @@ mod tests {
 
     #[test]
     fn loads_the_same_schema_from_every_supported_format() {
-        for extension in ["yaml", "json", "toml"] {
-            let path = write_config(extension, &config(extension));
+        let expected_path = write_config("toml", &config("toml"));
+        let expected = Config::load(&expected_path).unwrap();
+        fs::remove_file(expected_path).unwrap();
+        for (extension, format) in [
+            ("toml", "toml"),
+            ("yaml", "yaml"),
+            ("yml", "yaml"),
+            ("json", "json"),
+        ] {
+            let path = write_config(extension, &config(format));
             let loaded = Config::load(&path).unwrap();
             fs::remove_file(path).unwrap();
 
-            assert_eq!(loaded.agents().len(), 1);
-            assert_eq!(
-                loaded
-                    .catalog()
-                    .query_static(
-                        &crate::catalog::KeyQuery::from_values(
-                            Some("company".to_owned()),
-                            None,
-                            None,
-                            None,
-                            [],
-                            None,
-                        )
-                        .unwrap()
-                    )
-                    .len(),
-                1
-            );
+            assert_eq!(loaded, expected);
         }
     }
 
@@ -512,15 +503,21 @@ mod tests {
     }
 
     #[test]
-    fn rejects_ambiguous_config_yaml_and_yml() {
-        let directory = temporary_directory();
-        fs::write(directory.join("config.yaml"), config("yaml")).unwrap();
-        fs::write(directory.join("config.yml"), config("yaml")).unwrap();
-        assert!(matches!(
-            Config::discover_in(directory.clone()),
-            Err(ConfigError::AmbiguousConfig(_))
-        ));
-        fs::remove_dir_all(directory).unwrap();
+    fn rejects_ambiguous_config_formats_without_a_default_precedence() {
+        for names in [
+            ["config.yaml", "config.yml"],
+            ["config.toml", "config.yaml"],
+        ] {
+            let directory = temporary_directory();
+            for name in names {
+                fs::write(directory.join(name), "version: 1\n").unwrap();
+            }
+            assert!(matches!(
+                Config::discover_in(directory.clone()),
+                Err(ConfigError::AmbiguousConfig(_))
+            ));
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]
