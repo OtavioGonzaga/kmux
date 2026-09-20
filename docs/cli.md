@@ -6,8 +6,8 @@ syntax. This reference explains when to use each command.
 ## Execution
 
 ```bash
-kmux [FILTERS] [--] COMMAND...
-kmux exec [FILTERS] [--] COMMAND...
+kmux [FILTERS] [--select] [--] COMMAND...
+kmux exec [FILTERS] [--select] [--] COMMAND...
 ```
 
 Both forms resolve configured keys, create a private filtered agent for the
@@ -23,7 +23,23 @@ kmux --tag environment=staging -- rsync -av ./ site:/srv/site/
 ```
 
 Filters are `--scope`, `--comment`, `--key`, `--fingerprint`, repeatable
-`--tag KEY=VALUE`, and `--agent`. See [selection](selection.md).
+`--tag KEY=VALUE`, and `--agent`. They define the identities that may be
+delegated: without `--select`, every available match from one upstream agent is
+authorized for the child process. `--select` is an execution option, not a
+filter, and opens an interactive identity subset selection when needed.
+
+```bash
+# Delegate all matching personal identities from one upstream agent.
+kmux --scope personal -- git fetch
+
+# Choose a subset of the matching identities.
+kmux exec --scope personal --select -- codex
+```
+
+Unfiltered execution with several candidates requires a terminal for interactive
+selection. A filtered command spanning multiple upstream agents requires
+`--agent NAME` unless `--select` is used interactively. See
+[selection](selection.md).
 
 ## Initialize
 
@@ -59,8 +75,9 @@ public identity. When any key data flag is supplied, both `--agent` and
 confirmation unless `--yes` is supplied.
 
 `kmux keys` lists alias, fingerprint, agent, and comma-separated scopes from
-local configuration. It accepts the execution filters, does not contact an
-upstream agent, and reports an unknown `--agent` name as an error.
+local configuration. It accepts filters, does not contact an upstream agent, and
+reports an unknown `--agent` name as an error. It does not accept `--select`,
+which only applies to command execution.
 
 ## Import
 

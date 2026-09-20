@@ -34,14 +34,51 @@ in `kmux scopes`.
 
 ## Execution Outcomes
 
-After filters are applied:
+Filters define the set of identities a child process may use. kmux supports one
+upstream agent per execution, but that agent may provide multiple authorized
+identities.
 
-| Matches                             | Result                               |
-| ----------------------------------- | ------------------------------------ |
-| 0                                   | Error; no filtered proxy is started. |
-| 1                                   | Selected automatically.              |
-| Many with a controlling terminal    | An interactive chooser is shown.     |
-| Many without a controlling terminal | Error listing ambiguous candidates.  |
+### Explicit Filters
+
+When at least one filter is supplied, kmux resolves the matching configured
+identities before contacting the upstream agent:
+
+| Matches and options                  | Result                                             |
+| ------------------------------------ | -------------------------------------------------- |
+| 0                                    | Error; no filtered proxy is started.               |
+| One agent, without `--select`        | All matching available identities are authorized.  |
+| One agent, with `--select` and a TTY | Choose an identity subset with `MultiSelect`.      |
+| Multiple agents, without `--select`  | Error; add `--agent` to select one upstream agent. |
+| Multiple agents, with `--select`/TTY | Choose an upstream agent, then an identity subset. |
+| Selection required without a TTY     | Error; no child process is started.                |
+
+For example, this authorizes every available configured identity in the
+`personal` scope from one upstream agent without prompting:
+
+```bash
+kmux --scope personal -- ssh deploy@example.com
+```
+
+Add `--select` when a temporary subset is wanted:
+
+```bash
+kmux --scope personal --select -- ssh deploy@example.com
+```
+
+### No Filters
+
+Unfiltered execution never implicitly delegates every configured identity:
+
+| Candidates                          | Result                                             |
+| ----------------------------------- | -------------------------------------------------- |
+| 0                                   | Error; no filtered proxy is started.               |
+| 1                                   | Authorized automatically.                          |
+| Many with a controlling terminal    | Choose an upstream agent if needed, then a subset. |
+| Many without a controlling terminal | Error; add filters or run interactively.           |
+
+`--select` follows the same interactive policy. `MultiSelect` starts with no
+identities selected; confirming an empty selection or cancelling returns an
+error and does not start the child process.
 
 For example:
 
