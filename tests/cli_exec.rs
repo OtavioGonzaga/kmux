@@ -98,6 +98,125 @@ fn version_uses_the_binary_name_and_package_version() {
 }
 
 #[test]
+fn import_persists_public_identities_and_is_idempotent() {
+    let dir = unique_path("import");
+    std::fs::create_dir(&dir).unwrap();
+    let upstream_socket = dir.join("upstream.sock");
+    let listener = UnixListener::bind(&upstream_socket).unwrap();
+    let key_blob = b"persistent-import-key".to_vec();
+    let worker = thread::spawn(move || {
+        for _ in 0..5 {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert_eq!(read_frame(&mut stream), [11]);
+            let mut response = vec![12];
+            response.extend_from_slice(&1_u32.to_be_bytes());
+            put_string(&mut response, &key_blob);
+            put_string(&mut response, b"Persistent Key");
+            write_frame(&mut stream, &response);
+        }
+    });
+    let config = dir.join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "version = 1\n\n[agents.test]\ntype = \"unix\"\nsocket = \"{}\"\n",
+            upstream_socket.display()
+        ),
+    )
+    .unwrap();
+
+    let original = std::fs::read_to_string(&config).unwrap();
+    let stdout_toml = Command::new(env!("CARGO_BIN_EXE_kmux"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "import",
+            "agent",
+            "test",
+            "--stdout",
+        ])
+        .output()
+        .unwrap();
+    assert!(stdout_toml.status.success());
+    let snippet = String::from_utf8(stdout_toml.stdout).unwrap();
+    assert!(snippet.contains("comment = \"Persistent Key\""));
+    assert!(!snippet.contains("scopes = []"));
+    assert!(!snippet.contains("[keys.persistent-key.tags]"));
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
+
+    let first = Command::new(env!("CARGO_BIN_EXE_kmux"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "import",
+            "agent",
+            "test",
+            "--scope",
+            "company",
+            "--tag",
+            "source=test",
+        ])
+        .output()
+        .unwrap();
+    assert!(first.status.success(), "import failed: {first:?}");
+    assert!(String::from_utf8_lossy(&first.stdout).contains("1 key added"));
+    let persisted = std::fs::read_to_string(&config).unwrap();
+    assert!(persisted.contains("[keys.persistent-key]"));
+    assert!(persisted.contains("scopes = [\"company\"]"));
+    assert!(persisted.contains("source = \"test\""));
+    assert!(persisted.contains("comment = \"Persistent Key\""));
+
+    let before_dry_run = persisted.clone();
+    let dry_run = Command::new(env!("CARGO_BIN_EXE_kmux"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "import",
+            "agent",
+            "test",
+            "--dry-run",
+        ])
+        .output()
+        .unwrap();
+    assert!(dry_run.status.success());
+    assert!(String::from_utf8_lossy(&dry_run.stdout).contains("dry run"));
+    assert!(String::from_utf8_lossy(&dry_run.stdout).contains("would be added"));
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before_dry_run);
+
+    let stdout = Command::new(env!("CARGO_BIN_EXE_kmux"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "import",
+            "agent",
+            "test",
+            "--stdout",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(stdout.status.success());
+    assert!(String::from_utf8_lossy(&stdout.stdout).contains("\"keys\""));
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), before_dry_run);
+
+    let second = Command::new(env!("CARGO_BIN_EXE_kmux"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "import",
+            "agent",
+            "test",
+        ])
+        .output()
+        .unwrap();
+    assert!(second.status.success());
+    assert!(String::from_utf8_lossy(&second.stdout).contains("already configured"));
+    worker.join().unwrap();
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
 fn root_filters_expose_only_the_matching_identity_to_the_child() {
     if !available("ssh-agent") || !available("ssh-add") || !available("ssh-keygen") {
         eprintln!("skipping OpenSSH end-to-end test: required commands are unavailable");

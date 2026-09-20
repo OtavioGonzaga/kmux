@@ -43,11 +43,12 @@ pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
                     alias,
                     agent,
                     fingerprint,
+                    comment,
                     scopes,
                     tags,
                 },
         }) => {
-            key::add(&path, alias, agent, fingerprint, scopes, tags)?;
+            key::add(&path, alias, agent, fingerprint, comment, scopes, tags)?;
             return Ok(0);
         }
         Some(Command::Key {
@@ -58,19 +59,35 @@ pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
         }
         _ => {}
     }
+    if let Some(Command::Import {
+        command:
+            ImportCommand::Agent {
+                name,
+                scopes,
+                tags,
+                dry_run,
+                stdout,
+                format,
+            },
+    }) = cli.command
+    {
+        import::import_agent(
+            &path,
+            &name,
+            scopes,
+            tags,
+            dry_run,
+            stdout,
+            format.unwrap_or(crate::cli::OutputFormat::Toml),
+        )?;
+        return Ok(0);
+    }
     let config = Config::load(path.as_path())?;
     match cli.command {
         Some(Command::Exec { filters, command }) => {
             return exec::execute(&config, key_query(filters)?, command);
         }
-        Some(Command::Import {
-            command:
-                ImportCommand::Agent {
-                    name,
-                    scope,
-                    format,
-                },
-        }) => import::import_agent(&config, &name, scope.parse()?, format)?,
+        Some(Command::Import { .. }) => unreachable!("import returns before loading configuration"),
         Some(Command::Config {
             command: ConfigCommand::Check,
         }) => println!("configuration is valid"),

@@ -122,6 +122,7 @@ pub struct KeyEntry {
     agent: AgentName,
     scopes: BTreeSet<ScopePath>,
     tags: BTreeMap<String, String>,
+    comment: Option<String>,
 }
 
 impl KeyEntry {
@@ -139,7 +140,13 @@ impl KeyEntry {
             agent,
             scopes,
             tags,
+            comment: None,
         }
+    }
+
+    pub fn with_comment(mut self, comment: Option<String>) -> Self {
+        self.comment = comment.filter(|comment| !comment.is_empty());
+        self
     }
 
     pub fn alias(&self) -> &KeyAlias {
@@ -160,6 +167,10 @@ impl KeyEntry {
 
     pub fn tags(&self) -> &BTreeMap<String, String> {
         &self.tags
+    }
+
+    pub fn comment(&self) -> Option<&str> {
+        self.comment.as_deref()
     }
 }
 

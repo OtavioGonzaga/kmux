@@ -33,9 +33,8 @@ impl fmt::Display for Candidate {
             "{} - {} - {}",
             self.entry.alias(),
             scope,
-            self.identity
-                .comment
-                .as_deref()
+            self.entry
+                .comment()
                 .map(sanitize_comment)
                 .unwrap_or_else(|| "no comment".to_owned())
         )
@@ -81,13 +80,12 @@ pub fn resolve(config: &Config, query: &KeyQuery) -> Result<Vec<Candidate>, Sele
             UnixSocketAgent::new(definition.socket().to_owned()).identities()?,
         );
     }
-    Ok(resolve_available(entries, &available, query))
+    Ok(resolve_available(entries, &available))
 }
 
 pub fn resolve_available(
     entries: Vec<QueryMatch<'_>>,
     available: &BTreeMap<crate::agent::AgentName, Vec<Identity>>,
-    query: &KeyQuery,
 ) -> Vec<Candidate> {
     entries
         .into_iter()
@@ -97,7 +95,6 @@ pub fn resolve_available(
                 .iter()
                 .find(|identity| identity.fingerprint == *matched.entry.fingerprint())
                 .cloned()
-                .filter(|identity| query.matches_identity_comment(identity.comment.as_deref()))
                 .map(|identity| Candidate {
                     entry: matched.entry.clone(),
                     identity,
@@ -288,7 +285,20 @@ mod tests {
     }
 
     #[test]
-    fn resolution_does_not_contact_agents_eliminated_by_static_filters() {
+    fn candidate_display_prefers_persisted_comment() {
+        let mut candidate = candidate();
+        candidate.entry = candidate
+            .entry
+            .with_comment(Some("Persisted deployment key".to_owned()));
+        candidate.identity.comment = Some("different upstream comment".to_owned());
+        assert_eq!(
+            candidate.to_string(),
+            "key - unscoped - Persisted deployment key"
+        );
+    }
+
+    #[test]
+    fn comment_filter_does_not_contact_agents_eliminated_by_static_filters() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -320,7 +330,16 @@ mod tests {
             work.clone(),
             ["work/production".parse().unwrap()],
             BTreeMap::new(),
-        );
+        )
+        .with_comment(Some("work deployment".to_owned()));
+        let old_entry = KeyEntry::new(
+            KeyAlias::new("old-key").unwrap(),
+            Fingerprint::from_public_key_blob(b"old-public-key"),
+            old.clone(),
+            [],
+            BTreeMap::new(),
+        )
+        .with_comment(Some("old deployment".to_owned()));
         let config = Config::from_parts(
             BTreeMap::from([
                 (
@@ -329,11 +348,11 @@ mod tests {
                 ),
                 (old.clone(), AgentDefinition::new(old, &old_socket).unwrap()),
             ]),
-            KeyCatalog::from_entries([entry]).unwrap(),
+            KeyCatalog::from_entries([entry, old_entry]).unwrap(),
         )
         .unwrap();
         let query =
-            KeyQuery::from_values(Some("work".to_owned()), None, None, None, [], None).unwrap();
+            KeyQuery::from_values(None, Some("WORK".to_owned()), None, None, [], None).unwrap();
         assert_eq!(resolve(&config, &query).unwrap().len(), 1);
         worker.join().unwrap();
         assert!(
@@ -344,14 +363,15 @@ mod tests {
     }
 
     #[test]
-    fn comment_filter_is_case_insensitive_and_does_not_persist_comments() {
+    fn comment_filter_is_case_insensitive_and_matches_persisted_metadata() {
         let entry = KeyEntry::new(
             KeyAlias::new("deploy").unwrap(),
             Fingerprint::from_public_key_blob(b"key"),
             AgentName::new("agent").unwrap(),
             [],
             BTreeMap::new(),
-        );
+        )
+        .with_comment(Some("chave de produção".to_owned()));
         let catalog = KeyCatalog::from_entries([entry]).unwrap();
         let query =
             KeyQuery::from_values(None, Some("PRODUÇÃO".to_owned()), None, None, [], None).unwrap();
@@ -360,11 +380,11 @@ mod tests {
             vec![Identity {
                 key_blob: b"key".to_vec(),
                 fingerprint: Fingerprint::from_public_key_blob(b"key"),
-                comment: Some("chave de produção".to_owned()),
+                comment: Some("different upstream comment".to_owned()),
             }],
         )]);
         assert_eq!(
-            resolve_available(catalog.query_static(&query), &available, &query).len(),
+            resolve_available(catalog.query_static(&query), &available).len(),
             1
         );
     }
@@ -410,7 +430,7 @@ mod tests {
                 },
             ],
         )]);
-        let candidates = resolve_available(entries.query_static(&query), &available, &query);
+        let candidates = resolve_available(entries.query_static(&query), &available);
 
         assert!(matches!(
             choose_with_mode(&query, candidates, false, &FakeChooser),

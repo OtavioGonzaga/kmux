@@ -80,10 +80,16 @@ pub enum Command {
 pub enum ImportCommand {
     Agent {
         name: String,
-        #[arg(long)]
-        scope: String,
-        #[arg(long, value_enum, default_value_t = OutputFormat::Toml)]
-        format: OutputFormat,
+        #[arg(long = "scope")]
+        scopes: Vec<String>,
+        #[arg(long = "tag", value_name = "KEY=VALUE")]
+        tags: Vec<String>,
+        #[arg(long, conflicts_with = "stdout")]
+        dry_run: bool,
+        #[arg(long, conflicts_with = "dry_run")]
+        stdout: bool,
+        #[arg(long, value_enum, requires = "stdout")]
+        format: Option<OutputFormat>,
     },
 }
 
@@ -119,6 +125,8 @@ pub enum KeyCommand {
         agent: Option<String>,
         #[arg(long)]
         fingerprint: Option<String>,
+        #[arg(long)]
+        comment: Option<String>,
         #[arg(long = "scope")]
         scopes: Vec<String>,
         #[arg(long = "tag", value_name = "KEY=VALUE")]
@@ -228,16 +236,16 @@ mod tests {
 
     #[test]
     fn import_defaults_to_toml_output() {
-        let cli = Cli::try_parse_from(["kmux", "import", "agent", "primary", "--scope", "company"])
-            .unwrap();
+        let cli = Cli::try_parse_from(["kmux", "import", "agent", "primary"]).unwrap();
         let Some(Command::Import {
-            command: ImportCommand::Agent { format, .. },
+            command: ImportCommand::Agent { format, scopes, .. },
         }) = cli.command
         else {
             panic!("expected import agent");
         };
 
-        assert_eq!(format, OutputFormat::Toml);
+        assert_eq!(format, None);
+        assert!(scopes.is_empty());
     }
 
     #[test]
@@ -248,7 +256,7 @@ mod tests {
             ("json", OutputFormat::Json),
         ] {
             let cli = Cli::try_parse_from([
-                "kmux", "import", "agent", "primary", "--scope", "company", "--format", value,
+                "kmux", "import", "agent", "primary", "--stdout", "--format", value,
             ])
             .unwrap();
             let Some(Command::Import {
@@ -258,8 +266,68 @@ mod tests {
                 panic!("expected import agent");
             };
 
-            assert_eq!(format, expected);
+            assert_eq!(format, Some(expected));
         }
+    }
+
+    #[test]
+    fn parses_import_scopes_tags_and_modes() {
+        let cli = Cli::try_parse_from([
+            "kmux",
+            "import",
+            "agent",
+            "primary",
+            "--scope",
+            "company",
+            "--scope",
+            "production",
+            "--tag",
+            "provider=aws",
+            "--tag",
+            "environment=prod",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Some(Command::Import {
+            command:
+                ImportCommand::Agent {
+                    scopes,
+                    tags,
+                    dry_run,
+                    stdout,
+                    ..
+                },
+        }) = cli.command
+        else {
+            panic!("expected import agent");
+        };
+        assert_eq!(scopes, ["company", "production"]);
+        assert_eq!(tags, ["provider=aws", "environment=prod"]);
+        assert!(dry_run);
+        assert!(!stdout);
+    }
+
+    #[test]
+    fn import_modes_are_mutually_exclusive() {
+        assert!(
+            Cli::try_parse_from([
+                "kmux",
+                "import",
+                "agent",
+                "primary",
+                "--dry-run",
+                "--stdout"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn import_format_requires_stdout() {
+        assert!(
+            Cli::try_parse_from(["kmux", "import", "agent", "primary", "--format", "yaml"])
+                .is_err()
+        );
     }
 
     #[test]
@@ -314,5 +382,26 @@ mod tests {
         };
         assert_eq!(scopes, ["company", "production"]);
         assert_eq!(tags, ["provider=aws"]);
+
+        let key_with_comment = Cli::try_parse_from([
+            "kmux",
+            "key",
+            "add",
+            "deploy",
+            "--agent",
+            "work",
+            "--fingerprint",
+            "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y",
+            "--comment",
+            "Production deployment key",
+        ])
+        .unwrap();
+        let Some(Command::Key {
+            command: KeyCommand::Add { comment, .. },
+        }) = key_with_comment.command
+        else {
+            panic!("expected key add");
+        };
+        assert_eq!(comment.as_deref(), Some("Production deployment key"));
     }
 }

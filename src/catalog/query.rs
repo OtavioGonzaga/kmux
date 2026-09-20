@@ -54,12 +54,6 @@ impl KeyQuery {
         self.agent.as_ref()
     }
 
-    pub fn matches_identity_comment(&self, comment: Option<&str>) -> bool {
-        self.comment.as_ref().is_none_or(|needle| {
-            comment.is_some_and(|comment| comment.to_lowercase().contains(&needle.to_lowercase()))
-        })
-    }
-
     pub fn matches_entry(&self, entry: &KeyEntry) -> Option<Option<ScopePath>> {
         let matched_scope = match &self.scope {
             Some(scope) => entry
@@ -83,6 +77,11 @@ impl KeyQuery {
                 .tags
                 .iter()
                 .any(|(key, value)| entry.tags().get(key) != Some(value))
+            || self.comment.as_ref().is_some_and(|needle| {
+                !entry
+                    .comment()
+                    .is_some_and(|comment| comment.to_lowercase().contains(&needle.to_lowercase()))
+            })
         {
             return None;
         }

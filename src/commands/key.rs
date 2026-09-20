@@ -10,6 +10,7 @@ struct KeyAddRequest {
     alias: String,
     agent: Option<String>,
     fingerprint: Option<String>,
+    comment: Option<String>,
     scopes: Vec<String>,
     tags: Vec<String>,
 }
@@ -19,6 +20,7 @@ pub fn add(
     alias: String,
     agent: Option<String>,
     fingerprint: Option<String>,
+    comment: Option<String>,
     scopes: Vec<String>,
     tags: Vec<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -28,6 +30,7 @@ pub fn add(
             alias,
             agent,
             fingerprint,
+            comment,
             scopes,
             tags,
         },
@@ -48,19 +51,23 @@ fn add_with(
         alias,
         agent,
         fingerprint,
+        comment,
         scopes,
         tags,
     } = request;
     let alias = KeyAlias::new(alias)?;
-    let has_flags =
-        agent.is_some() || fingerprint.is_some() || !scopes.is_empty() || !tags.is_empty();
+    let has_flags = agent.is_some()
+        || fingerprint.is_some()
+        || comment.is_some()
+        || !scopes.is_empty()
+        || !tags.is_empty();
     let mut document = ConfigStore::load(path.as_path())?;
     let entry = if has_flags {
         let agent =
             agent.ok_or("missing required --agent when using non-interactive key creation")?;
         let fingerprint = fingerprint
             .ok_or("missing required --fingerprint when using non-interactive key creation")?;
-        entry(alias, agent, fingerprint, scopes, tags)?
+        entry(alias, agent, fingerprint, comment, scopes, tags)?
     } else {
         interactive_entry_with(&document.validate()?, alias, prompter, identities)?
     };
@@ -121,6 +128,7 @@ fn entry(
     alias: KeyAlias,
     agent: String,
     fingerprint: String,
+    comment: Option<String>,
     scopes: Vec<String>,
     tags: Vec<String>,
 ) -> Result<KeyEntry, Box<dyn std::error::Error>> {
@@ -131,7 +139,7 @@ fn entry(
         .map(|scope| ScopePath::from_str(&scope))
         .collect::<Result<Vec<_>, _>>()?;
     let tags = parse_tags(tags)?;
-    Ok(KeyEntry::new(alias, fingerprint, agent, scopes, tags))
+    Ok(KeyEntry::new(alias, fingerprint, agent, scopes, tags).with_comment(comment))
 }
 
 fn interactive_entry_with(
@@ -155,6 +163,7 @@ fn interactive_entry_with(
         alias,
         agent.to_string(),
         identity.fingerprint.to_string(),
+        identity.comment,
         scopes,
         tags,
     )
@@ -240,7 +249,9 @@ impl KeyPrompter for InquireKeyPrompter {
     }
 }
 
-fn parse_tags(tags: Vec<String>) -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
+pub(crate) fn parse_tags(
+    tags: Vec<String>,
+) -> Result<BTreeMap<String, String>, Box<dyn std::error::Error>> {
     let mut parsed = BTreeMap::new();
     for tag in tags {
         let Some((name, value)) = tag.split_once('=') else {
@@ -307,6 +318,7 @@ mod tests {
                 "deploy".to_owned(),
                 Some("work".to_owned()),
                 None,
+                None,
                 vec![],
                 vec![],
             )
@@ -323,17 +335,35 @@ mod tests {
                     "incomplete".to_owned(),
                     agent,
                     fingerprint,
+                    None,
                     scopes,
                     tags
                 )
                 .is_err()
             );
         }
+        assert!(
+            add_with(
+                &config,
+                KeyAddRequest {
+                    alias: "comment-only".to_owned(),
+                    agent: None,
+                    fingerprint: None,
+                    comment: Some("metadata".to_owned()),
+                    scopes: vec![],
+                    tags: vec![],
+                },
+                &FakePrompter { confirmed: true },
+                |_| panic!("comment is a data flag and must not invoke the wizard"),
+            )
+            .is_err()
+        );
         add(
             &config,
             "deploy".to_owned(),
             Some("work".to_owned()),
             Some(FINGERPRINT.to_owned()),
+            Some("Production deployment key".to_owned()),
             vec!["company/production".to_owned(), "company/backup".to_owned()],
             vec!["provider=aws".to_owned()],
         )
@@ -341,6 +371,7 @@ mod tests {
         let loaded = ConfigStore::load(&path).unwrap().validate().unwrap();
         let entry = loaded.catalog().entries().next().unwrap();
         assert_eq!(entry.scopes().len(), 2);
+        assert_eq!(entry.comment(), Some("Production deployment key"));
         assert_eq!(
             entry.tags().get("provider").map(String::as_str),
             Some("aws")
@@ -351,6 +382,7 @@ mod tests {
                 "other".to_owned(),
                 Some("work".to_owned()),
                 Some(FINGERPRINT.to_owned()),
+                None,
                 vec![],
                 vec![],
             )
@@ -362,6 +394,7 @@ mod tests {
                 "unknown-agent".to_owned(),
                 Some("missing".to_owned()),
                 Some("SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+A".to_owned()),
+                None,
                 vec![],
                 vec![],
             )
@@ -373,6 +406,7 @@ mod tests {
                 "bad-fingerprint".to_owned(),
                 Some("work".to_owned()),
                 Some("SHA256:not-a-fingerprint".to_owned()),
+                None,
                 vec![],
                 vec![],
             )
@@ -384,6 +418,7 @@ mod tests {
                 "duplicate-tag".to_owned(),
                 Some("work".to_owned()),
                 Some("SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+A".to_owned()),
+                None,
                 vec![],
                 vec!["provider=aws".to_owned(), "provider=gcp".to_owned()],
             )
@@ -474,6 +509,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(entry.fingerprint().as_str(), FINGERPRINT);
+        assert_eq!(entry.comment(), Some("deploy key"));
         assert_eq!(entry.scopes().len(), 2);
         assert_eq!(
             entry.tags().get("provider").map(String::as_str),
@@ -532,6 +568,7 @@ mod tests {
                     alias: "deploy".to_owned(),
                     agent: None,
                     fingerprint: None,
+                    comment: None,
                     scopes: vec![],
                     tags: vec![],
                 },
@@ -567,6 +604,7 @@ mod tests {
             "deploy".to_owned(),
             Some("work".to_owned()),
             Some(FINGERPRINT.to_owned()),
+            None,
             vec![],
             vec![],
         )

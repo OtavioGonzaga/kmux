@@ -85,7 +85,10 @@ impl Config {
                     "tags must use non-empty KEY=VALUE syntax".to_owned(),
                 ));
             }
-            entries.push(KeyEntry::new(alias, fingerprint, agent, scopes, key.tags));
+            entries.push(
+                KeyEntry::new(alias, fingerprint, agent, scopes, key.tags)
+                    .with_comment(key.comment),
+            );
         }
 
         let catalog = KeyCatalog::from_entries(entries)
@@ -171,6 +174,13 @@ impl ConfigDocument {
         Config::from_document(self.clone())
     }
 
+    fn normalized(mut self) -> Self {
+        for key in self.keys.values_mut() {
+            key.comment = key.comment.take().filter(|comment| !comment.is_empty());
+        }
+        self
+    }
+
     pub fn add_agent(&mut self, name: AgentName, socket: PathBuf) -> Result<(), ConfigError> {
         if self.agents.keys().any(|existing| {
             AgentName::new(existing).expect("loaded configuration has valid agent names") == name
@@ -232,6 +242,7 @@ impl ConfigDocument {
                 agent: entry.agent().to_string(),
                 scopes: entry.scopes().iter().map(ToString::to_string).collect(),
                 tags: entry.tags().clone(),
+                comment: entry.comment().map(str::to_owned),
             },
         );
         candidate.validate()?;
@@ -277,19 +288,20 @@ impl ConfigStore {
             ConfigFormat::Json => &JsonConfigDecoder,
             ConfigFormat::Toml => &TomlConfigDecoder,
         };
-        let document = decoder.decode(&read_config(path)?)?;
+        let document = decoder.decode(&read_config(path)?)?.normalized();
         document.validate()?;
         Ok(document)
     }
 
     pub fn save(path: &Path, document: &ConfigDocument) -> Result<(), ConfigError> {
+        let document = document.clone().normalized();
         document.validate()?;
         let output = match ConfigFormat::from_path(path)? {
-            ConfigFormat::Toml => toml::to_string_pretty(document)
+            ConfigFormat::Toml => toml::to_string_pretty(&document)
                 .map_err(|error| ConfigError::Serialize(error.to_string()))?,
-            ConfigFormat::Yaml => serde_saphyr::to_string(document)
+            ConfigFormat::Yaml => serde_saphyr::to_string(&document)
                 .map_err(|error| ConfigError::Serialize(error.to_string()))?,
-            ConfigFormat::Json => serde_json::to_string_pretty(document)
+            ConfigFormat::Json => serde_json::to_string_pretty(&document)
                 .map_err(|error| ConfigError::Serialize(error.to_string()))?,
         };
         if output.len() > MAX_CONFIG_BYTES {
@@ -426,7 +438,11 @@ impl fmt::Display for ConfigError {
                 formatter.write_str("could not determine the config directory")
             }
             Self::ConfigNotFound(path) => {
-                write!(formatter, "no config found in '{}'", path.display())
+                write!(
+                    formatter,
+                    "no config found in '{}', run 'kmux init' to create config file",
+                    path.display()
+                )
             }
             Self::AmbiguousConfig(paths) => write!(
                 formatter,
@@ -445,7 +461,10 @@ impl fmt::Display for ConfigError {
                 "duplicate agent name '{agent}' after normalization"
             ),
             Self::UnknownAgent(agent) => {
-                write!(formatter, "unknown agent '{agent}'")
+                write!(
+                    formatter,
+                    "unknown agent '{agent}', run 'kmux agent add --socket /path/to/agent.sock {agent}'"
+                )
             }
             Self::AgentInUse(agent, aliases) => write!(
                 formatter,
@@ -573,10 +592,12 @@ enum AgentKind {
 struct KeyDocument {
     fingerprint: String,
     agent: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     scopes: Vec<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     tags: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    comment: Option<String>,
 }
 
 #[cfg(test)]
@@ -852,6 +873,7 @@ mod tests {
                     agent: "work".to_owned(),
                     scopes: vec!["company/production".to_owned()],
                     tags: BTreeMap::from([("provider".to_owned(), "aws".to_owned())]),
+                    comment: Some("Production deployment key".to_owned()),
                 },
             )]),
         }
@@ -867,6 +889,7 @@ mod tests {
             assert_eq!(config.agents().len(), 1);
             let entry = config.catalog().entries().next().unwrap();
             assert_eq!(entry.scopes().len(), 1);
+            assert_eq!(entry.comment(), Some("Production deployment key"));
             assert_eq!(
                 entry.tags().get("provider").map(String::as_str),
                 Some("aws")
@@ -894,6 +917,55 @@ mod tests {
         };
         assert!(ConfigStore::save(&path, &document).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn omits_empty_key_metadata_and_normalizes_empty_comments() {
+        let directory = temporary_directory();
+        let path = directory.join("config.toml");
+        let mut document = ConfigDocument::empty();
+        let agent = AgentName::new("work").unwrap();
+        document
+            .add_agent(agent.clone(), "/tmp/work.sock".into())
+            .unwrap();
+        document
+            .add_key(
+                KeyEntry::new(
+                    KeyAlias::new("deploy").unwrap(),
+                    Fingerprint::from_str(FINGERPRINT).unwrap(),
+                    agent,
+                    [],
+                    BTreeMap::new(),
+                )
+                .with_comment(Some(String::new())),
+            )
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+        let output = fs::read_to_string(&path).unwrap();
+        assert!(!output.contains("scopes = []"));
+        assert!(!output.contains("[keys.deploy.tags]"));
+        assert!(!output.contains("comment = \"\""));
+        fs::write(&path, format!("{output}comment = \"\"\n")).unwrap();
+        let loaded = ConfigStore::load(&path).unwrap();
+        ConfigStore::save(&path, &loaded).unwrap();
+        assert!(
+            !fs::read_to_string(&path)
+                .unwrap()
+                .contains("comment = \"\"")
+        );
+        assert!(
+            ConfigStore::load(&path)
+                .unwrap()
+                .validate()
+                .unwrap()
+                .catalog()
+                .entries()
+                .next()
+                .unwrap()
+                .comment()
+                .is_none()
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 
