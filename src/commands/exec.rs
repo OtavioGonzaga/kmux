@@ -2,7 +2,7 @@ use kmux::agent::UnixSocketAgent;
 use kmux::catalog::KeyQuery;
 use kmux::config::Config;
 use kmux::proxy::{FilteredAgent, ProxyServer};
-use kmux::selection::{choose, resolve};
+use kmux::selection::{choose, resolve, resolve_single_agent};
 use rustix::process::{Pid, Signal, kill_process};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
@@ -17,23 +17,30 @@ use std::thread;
 pub fn execute(
     config: &Config,
     query: KeyQuery,
+    has_filters: bool,
     command: Vec<String>,
 ) -> Result<i32, Box<dyn std::error::Error>> {
     if command.is_empty() {
         return Err("a child command is required".into());
     }
     tracing::info!(query = %query, command = %command[0], "starting filtered command");
-    let candidate = choose(&query, resolve(config, &query)?)?;
+    let candidates = if has_filters {
+        resolve_single_agent(config, &query)?
+    } else {
+        vec![choose(&query, resolve(config, &query)?)?]
+    };
     let definition = config
         .agents()
-        .get(candidate.entry.agent())
+        .get(candidates[0].entry.agent())
         .ok_or("selected agent is missing")?;
     let runtime = RuntimeDirectory::new()?;
     let server = ProxyServer::bind(
         runtime.socket_path(),
         FilteredAgent::new(
             UnixSocketAgent::new(definition.socket().to_owned()),
-            [candidate.identity.key_blob],
+            candidates
+                .into_iter()
+                .map(|candidate| candidate.identity.key_blob),
         ),
     )?;
     let signals = SignalRegistration::new()?;

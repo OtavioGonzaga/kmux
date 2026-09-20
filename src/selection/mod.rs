@@ -90,6 +90,41 @@ pub fn resolve(config: &Config, query: &KeyQuery) -> Result<Vec<Candidate>, Sele
     Ok(resolve_available(entries, &available))
 }
 
+/// Resolves matches from exactly one upstream agent for filtered execution.
+///
+/// This fails before contacting an upstream agent when static matches span
+/// multiple agents, because a filtered proxy can delegate identities from only
+/// one upstream agent at a time.
+pub fn resolve_single_agent(
+    config: &Config,
+    query: &KeyQuery,
+) -> Result<Vec<Candidate>, SelectionError> {
+    validate_agent(config, query)?;
+    let entries = config.catalog().query_static(query);
+    let agents = entries
+        .iter()
+        .map(|matched| matched.entry.agent().clone())
+        .collect::<BTreeSet<_>>();
+    let agent = match agents.len() {
+        0 => return Err(SelectionError::NoCandidates(Box::new(query.clone()))),
+        1 => agents.into_iter().next().unwrap(),
+        _ => return Err(SelectionError::MultipleAgents(agents)),
+    };
+    let definition = config
+        .agents()
+        .get(&agent)
+        .ok_or_else(|| SelectionError::MissingAgent(agent.clone()))?;
+    let available = BTreeMap::from([(
+        agent,
+        UnixSocketAgent::new(definition.socket().to_owned()).identities()?,
+    )]);
+    let candidates = resolve_available(entries, &available);
+    if candidates.is_empty() {
+        return Err(SelectionError::NoCandidates(Box::new(query.clone())));
+    }
+    Ok(candidates)
+}
+
 /// Verifies that an agent query names an agent present in configuration.
 pub fn validate_agent(config: &Config, query: &KeyQuery) -> Result<(), SelectionError> {
     if let Some(agent) = query.agent()
@@ -187,6 +222,8 @@ pub enum SelectionError {
     MissingAgent(crate::agent::AgentName),
     /// The query named an agent absent from the configuration.
     UnknownAgent(crate::agent::AgentName),
+    /// Static matches belong to more than one upstream agent.
+    MultipleAgents(BTreeSet<crate::agent::AgentName>),
 }
 impl From<crate::agent::AgentError> for SelectionError {
     fn from(value: crate::agent::AgentError) -> Self {
@@ -206,6 +243,15 @@ impl fmt::Display for SelectionError {
             Self::Prompt(error) => write!(f, "identity selection failed: {error}"),
             Self::MissingAgent(agent) => write!(f, "configured agent '{agent}' is missing"),
             Self::UnknownAgent(agent) => write!(f, "unknown configured agent '{agent}'"),
+            Self::MultipleAgents(agents) => write!(
+                f,
+                "matched identities span multiple upstream agents: {}; add --agent to select one upstream agent",
+                agents
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
         }
     }
 }
@@ -215,12 +261,12 @@ impl std::error::Error for SelectionError {}
 mod tests {
     use super::{
         Candidate, CandidateChooser, SelectionError, choose_with_mode, resolve, resolve_available,
-        sanitize_comment,
+        resolve_single_agent, sanitize_comment,
     };
     use crate::agent::{AgentDefinition, AgentName, read_frame, write_frame};
     use crate::catalog::{Fingerprint, Identity, KeyAlias, KeyCatalog, KeyEntry, KeyQuery};
     use crate::config::Config;
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::io;
     use std::os::unix::net::UnixListener;
     use std::str::FromStr;
@@ -391,6 +437,116 @@ mod tests {
         );
         let _ = std::fs::remove_file(work_socket);
         let _ = std::fs::remove_file(old_socket);
+    }
+
+    #[test]
+    fn filtered_resolution_rejects_multiple_agents_before_connecting() {
+        let primary = AgentName::new("primary").unwrap();
+        let secondary = AgentName::new("secondary").unwrap();
+        let config = Config::from_parts(
+            BTreeMap::from([
+                (
+                    primary.clone(),
+                    AgentDefinition::new(primary.clone(), "/tmp/kmux-primary.sock").unwrap(),
+                ),
+                (
+                    secondary.clone(),
+                    AgentDefinition::new(secondary.clone(), "/tmp/kmux-secondary.sock").unwrap(),
+                ),
+            ]),
+            KeyCatalog::from_entries([
+                KeyEntry::new(
+                    KeyAlias::new("primary-key").unwrap(),
+                    Fingerprint::from_public_key_blob(b"primary-key"),
+                    primary.clone(),
+                    ["personal".parse().unwrap()],
+                    BTreeMap::new(),
+                ),
+                KeyEntry::new(
+                    KeyAlias::new("secondary-key").unwrap(),
+                    Fingerprint::from_public_key_blob(b"secondary-key"),
+                    secondary.clone(),
+                    ["personal".parse().unwrap()],
+                    BTreeMap::new(),
+                ),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let query =
+            KeyQuery::from_values(Some("personal".to_owned()), None, None, None, [], None).unwrap();
+
+        assert!(matches!(
+            resolve_single_agent(&config, &query),
+            Err(SelectionError::MultipleAgents(agents)) if agents == BTreeSet::from([primary, secondary])
+        ));
+    }
+
+    #[test]
+    fn agent_filter_limits_filtered_resolution_to_one_upstream() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let socket = std::env::temp_dir().join(format!("kmux-primary-{unique}.sock"));
+        let listener = UnixListener::bind(&socket).unwrap();
+        let key_blob = b"primary-public-key".to_vec();
+        let worker_blob = key_blob.clone();
+        let worker = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            assert_eq!(read_frame(&mut stream).unwrap(), [11]);
+            let mut response = vec![12];
+            response.extend_from_slice(&1_u32.to_be_bytes());
+            response.extend_from_slice(&(worker_blob.len() as u32).to_be_bytes());
+            response.extend_from_slice(&worker_blob);
+            response.extend_from_slice(&0_u32.to_be_bytes());
+            write_frame(&mut stream, &response).unwrap();
+        });
+        let primary = AgentName::new("primary").unwrap();
+        let secondary = AgentName::new("secondary").unwrap();
+        let config = Config::from_parts(
+            BTreeMap::from([
+                (
+                    primary.clone(),
+                    AgentDefinition::new(primary.clone(), &socket).unwrap(),
+                ),
+                (
+                    secondary.clone(),
+                    AgentDefinition::new(secondary.clone(), "/tmp/kmux-secondary.sock").unwrap(),
+                ),
+            ]),
+            KeyCatalog::from_entries([
+                KeyEntry::new(
+                    KeyAlias::new("primary-key").unwrap(),
+                    Fingerprint::from_public_key_blob(&key_blob),
+                    primary,
+                    ["personal".parse().unwrap()],
+                    BTreeMap::new(),
+                ),
+                KeyEntry::new(
+                    KeyAlias::new("secondary-key").unwrap(),
+                    Fingerprint::from_public_key_blob(b"secondary-public-key"),
+                    secondary,
+                    ["personal".parse().unwrap()],
+                    BTreeMap::new(),
+                ),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let query = KeyQuery::from_values(
+            Some("personal".to_owned()),
+            None,
+            None,
+            None,
+            [],
+            Some("primary".to_owned()),
+        )
+        .unwrap();
+
+        assert_eq!(resolve_single_agent(&config, &query).unwrap().len(), 1);
+        worker.join().unwrap();
+        let _ = std::fs::remove_file(socket);
     }
 
     #[test]

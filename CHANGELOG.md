@@ -7,6 +7,11 @@ Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Authorize every matching identity from one upstream agent for filtered command
+  execution, instead of interactively reducing the set to one key.
+
 ## [0.2.0] - 2026-09-20
 
 ### Changed

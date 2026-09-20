@@ -283,7 +283,7 @@ fn import_persists_public_identities_and_is_idempotent() {
 }
 
 #[test]
-fn root_filters_expose_only_the_matching_identity_to_the_child() {
+fn root_filters_expose_all_matching_identities_to_the_child() {
     if !available("ssh-agent") || !available("ssh-add") || !available("ssh-keygen") {
         eprintln!("skipping OpenSSH end-to-end test: required commands are unavailable");
         return;
@@ -300,8 +300,15 @@ fn root_filters_expose_only_the_matching_identity_to_the_child() {
     wait_for_socket(&upstream_socket);
 
     let hogix_key = dir.join("hogix");
-    let personal_key = dir.join("personal");
-    for (key, comment) in [(&hogix_key, "hogix key"), (&personal_key, "personal key")] {
+    let personal_first_key = dir.join("personal-first");
+    let personal_second_key = dir.join("personal-second");
+    let personal_third_key = dir.join("personal-third");
+    for (key, comment) in [
+        (&hogix_key, "hogix key"),
+        (&personal_first_key, "personal first key"),
+        (&personal_second_key, "personal second key"),
+        (&personal_third_key, "personal third key"),
+    ] {
         assert!(
             Command::new("ssh-keygen")
                 .args(["-q", "-t", "ed25519", "-N", "", "-C", comment, "-f"])
@@ -321,7 +328,11 @@ fn root_filters_expose_only_the_matching_identity_to_the_child() {
     }
 
     let hogix_public = std::fs::read_to_string(hogix_key.with_extension("pub")).unwrap();
-    let personal_public = std::fs::read_to_string(personal_key.with_extension("pub")).unwrap();
+    let personal_public = [
+        std::fs::read_to_string(personal_first_key.with_extension("pub")).unwrap(),
+        std::fs::read_to_string(personal_second_key.with_extension("pub")).unwrap(),
+        std::fs::read_to_string(personal_third_key.with_extension("pub")).unwrap(),
+    ];
     let fingerprint = |public_key: &str| {
         Fingerprint::from_public_key_blob(
             &base64::engine::general_purpose::STANDARD
@@ -333,10 +344,12 @@ fn root_filters_expose_only_the_matching_identity_to_the_child() {
     std::fs::write(
         &config,
         format!(
-            "version: 1\nagents:\n  test:\n    type: unix\n    socket: {}\nkeys:\n  hogix:\n    fingerprint: \"{}\"\n    agent: test\n    scopes: [hogix]\n  personal:\n    fingerprint: \"{}\"\n    agent: test\n    scopes: [personal]\n",
+            "version: 1\nagents:\n  test:\n    type: unix\n    socket: {}\nkeys:\n  hogix:\n    fingerprint: \"{}\"\n    agent: test\n    scopes: [hogix]\n  personal-first:\n    fingerprint: \"{}\"\n    agent: test\n    scopes: [personal]\n  personal-second:\n    fingerprint: \"{}\"\n    agent: test\n    scopes: [personal]\n  personal-third:\n    fingerprint: \"{}\"\n    agent: test\n    scopes: [personal]\n",
             upstream_socket.display(),
             fingerprint(&hogix_public),
-            fingerprint(&personal_public),
+            fingerprint(&personal_public[0]),
+            fingerprint(&personal_public[1]),
+            fingerprint(&personal_public[2]),
         ),
     )
     .unwrap();
@@ -346,7 +359,7 @@ fn root_filters_expose_only_the_matching_identity_to_the_child() {
             "--config",
             config.to_str().unwrap(),
             "-s",
-            "hogix",
+            "personal",
             "ssh-add",
             "-L",
         ])
@@ -356,8 +369,10 @@ fn root_filters_expose_only_the_matching_identity_to_the_child() {
 
     assert!(output.status.success(), "kmux failed: {output:?}");
     let identities = String::from_utf8(output.stdout).unwrap();
-    assert!(identities.contains(&hogix_public));
-    assert!(!identities.contains(&personal_public));
+    for public_key in &personal_public {
+        assert!(identities.contains(public_key));
+    }
+    assert!(!identities.contains(&hogix_public));
     let _ = std::fs::remove_dir_all(dir);
 }
 
