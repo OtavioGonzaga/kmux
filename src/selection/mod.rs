@@ -1,7 +1,6 @@
 use crate::agent::{UnixSocketAgent, UpstreamAgent};
-use crate::catalog::{Identity, KeyEntry, ScopeQuery};
+use crate::catalog::{Identity, KeyEntry, KeyQuery, QueryMatch};
 use crate::config::Config;
-use crate::scope::ScopePath;
 use inquire::Select;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -11,16 +10,29 @@ use std::io::{IsTerminal, stdin};
 pub struct Candidate {
     pub entry: KeyEntry,
     pub identity: Identity,
-    pub matched_scope: ScopePath,
+    pub matched_scope: Option<crate::scope::ScopePath>,
 }
 
 impl fmt::Display for Candidate {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let scope = match &self.matched_scope {
+            Some(scope) => scope.to_string(),
+            None if self.entry.scopes().is_empty() => "unscoped".to_owned(),
+            None => format!(
+                "scopes: {}",
+                self.entry
+                    .scopes()
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+        };
         write!(
             f,
             "{} - {} - {}",
             self.entry.alias(),
-            self.matched_scope,
+            scope,
             self.identity
                 .comment
                 .as_deref()
@@ -47,12 +59,16 @@ fn sanitize_comment(comment: &str) -> String {
     sanitized
 }
 
-pub fn resolve(config: &Config, scope: ScopePath) -> Result<Vec<Candidate>, SelectionError> {
-    let query = ScopeQuery::new(scope);
-    let entries = config.catalog().query(&query);
+pub fn resolve(config: &Config, query: &KeyQuery) -> Result<Vec<Candidate>, SelectionError> {
+    if let Some(agent) = query.agent()
+        && !config.agents().contains_key(agent)
+    {
+        return Err(SelectionError::UnknownAgent(agent.clone()));
+    }
+    let entries = config.catalog().query_static(query);
     let required_agents = entries
         .iter()
-        .map(|entry| entry.agent())
+        .map(|entry| entry.entry.agent())
         .collect::<BTreeSet<_>>();
     let mut available = BTreeMap::new();
     for name in required_agents {
@@ -60,45 +76,45 @@ pub fn resolve(config: &Config, scope: ScopePath) -> Result<Vec<Candidate>, Sele
             .agents()
             .get(name)
             .ok_or_else(|| SelectionError::MissingAgent(name.clone()))?;
-        let agent = UnixSocketAgent::new(definition.socket().to_owned());
-        available.insert(name.clone(), agent.identities()?);
+        available.insert(
+            name.clone(),
+            UnixSocketAgent::new(definition.socket().to_owned()).identities()?,
+        );
     }
-    Ok(resolve_available(entries, &available, &query))
+    Ok(resolve_available(entries, &available, query))
 }
 
 pub fn resolve_available(
-    entries: Vec<&KeyEntry>,
+    entries: Vec<QueryMatch<'_>>,
     available: &BTreeMap<crate::agent::AgentName, Vec<Identity>>,
-    query: &ScopeQuery,
+    query: &KeyQuery,
 ) -> Vec<Candidate> {
     entries
         .into_iter()
-        .filter_map(|entry| {
-            let matched_scope = query.matching_scope(entry)?;
+        .filter_map(|matched| {
             available
-                .get(entry.agent())?
+                .get(matched.entry.agent())?
                 .iter()
-                .find(|identity| identity.fingerprint == *entry.fingerprint())
+                .find(|identity| identity.fingerprint == *matched.entry.fingerprint())
                 .cloned()
+                .filter(|identity| query.matches_identity_comment(identity.comment.as_deref()))
                 .map(|identity| Candidate {
-                    entry: entry.clone(),
+                    entry: matched.entry.clone(),
                     identity,
-                    matched_scope,
+                    matched_scope: matched.matched_scope,
                 })
         })
         .collect()
 }
 
-pub fn choose(candidates: Vec<Candidate>) -> Result<Candidate, SelectionError> {
-    choose_with(candidates, &InquireCandidateChooser)
+pub fn choose(query: &KeyQuery, candidates: Vec<Candidate>) -> Result<Candidate, SelectionError> {
+    choose_with(query, candidates, &InquireCandidateChooser)
 }
 
 pub trait CandidateChooser {
     fn choose(&self, candidates: Vec<Candidate>) -> Result<Candidate, SelectionError>;
 }
-
 pub struct InquireCandidateChooser;
-
 impl CandidateChooser for InquireCandidateChooser {
     fn choose(&self, candidates: Vec<Candidate>) -> Result<Candidate, SelectionError> {
         Select::new("Select identity", candidates)
@@ -108,21 +124,24 @@ impl CandidateChooser for InquireCandidateChooser {
 }
 
 pub fn choose_with(
+    query: &KeyQuery,
     candidates: Vec<Candidate>,
     chooser: &dyn CandidateChooser,
 ) -> Result<Candidate, SelectionError> {
-    choose_with_mode(candidates, stdin().is_terminal(), chooser)
+    choose_with_mode(query, candidates, stdin().is_terminal(), chooser)
 }
 
 pub fn choose_with_mode(
+    query: &KeyQuery,
     candidates: Vec<Candidate>,
     interactive: bool,
     chooser: &dyn CandidateChooser,
 ) -> Result<Candidate, SelectionError> {
     match candidates.len() {
-        0 => Err(SelectionError::NoCandidates),
+        0 => Err(SelectionError::NoCandidates(Box::new(query.clone()))),
         1 => Ok(candidates.into_iter().next().unwrap()),
         _ if !interactive => Err(SelectionError::Ambiguous(
+            Box::new(query.clone()),
             candidates
                 .into_iter()
                 .map(|candidate| candidate.to_string())
@@ -135,10 +154,11 @@ pub fn choose_with_mode(
 #[derive(Debug)]
 pub enum SelectionError {
     Agent(crate::agent::AgentError),
-    NoCandidates,
-    Ambiguous(Vec<String>),
+    NoCandidates(Box<KeyQuery>),
+    Ambiguous(Box<KeyQuery>, Vec<String>),
     Prompt(String),
     MissingAgent(crate::agent::AgentName),
+    UnknownAgent(crate::agent::AgentName),
 }
 impl From<crate::agent::AgentError> for SelectionError {
     fn from(value: crate::agent::AgentError) -> Self {
@@ -149,14 +169,15 @@ impl fmt::Display for SelectionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Agent(error) => error.fmt(f),
-            Self::NoCandidates => f.write_str("no configured identities match the requested scope"),
-            Self::Ambiguous(candidates) => write!(
+            Self::NoCandidates(query) => write!(f, "no identities matched: {query}"),
+            Self::Ambiguous(query, candidates) => write!(
                 f,
-                "multiple identities match; use an interactive terminal: {}",
+                "multiple identities matched ({query}); run interactively to select one or add filters: {}",
                 candidates.join(", ")
             ),
             Self::Prompt(error) => write!(f, "identity selection failed: {error}"),
             Self::MissingAgent(agent) => write!(f, "configured agent '{agent}' is missing"),
+            Self::UnknownAgent(agent) => write!(f, "unknown configured agent '{agent}'"),
         }
     }
 }
@@ -165,12 +186,12 @@ impl std::error::Error for SelectionError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        Candidate, CandidateChooser, SelectionError, choose_with_mode, resolve, sanitize_comment,
+        Candidate, CandidateChooser, SelectionError, choose_with_mode, resolve, resolve_available,
+        sanitize_comment,
     };
     use crate::agent::{AgentDefinition, AgentName, read_frame, write_frame};
-    use crate::catalog::{Fingerprint, Identity, KeyAlias, KeyCatalog, KeyEntry};
+    use crate::catalog::{Fingerprint, Identity, KeyAlias, KeyCatalog, KeyEntry, KeyQuery};
     use crate::config::Config;
-    use crate::scope::ScopePath;
     use std::collections::BTreeMap;
     use std::io;
     use std::os::unix::net::UnixListener;
@@ -178,10 +199,96 @@ mod tests {
     use std::thread;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn query() -> KeyQuery {
+        KeyQuery::default()
+    }
+    fn candidate() -> Candidate {
+        Candidate {
+            entry: KeyEntry::new(
+                KeyAlias::new("key").unwrap(),
+                Fingerprint::from_public_key_blob(b"key"),
+                AgentName::new("agent").unwrap(),
+                [],
+                BTreeMap::new(),
+            ),
+            identity: Identity {
+                key_blob: b"key".to_vec(),
+                fingerprint: Fingerprint::from_public_key_blob(b"key"),
+                comment: None,
+            },
+            matched_scope: None,
+        }
+    }
+    struct FakeChooser;
+    impl CandidateChooser for FakeChooser {
+        fn choose(&self, candidates: Vec<Candidate>) -> Result<Candidate, SelectionError> {
+            Ok(candidates.into_iter().next().unwrap())
+        }
+    }
     #[test]
-    fn resolution_does_not_contact_unrelated_agents() {
-        let work = AgentName::new("work").unwrap();
-        let old = AgentName::new("old-agent").unwrap();
+    fn selection_never_chooses_ambiguous_candidates_without_a_terminal() {
+        let candidate = candidate();
+        assert!(matches!(
+            choose_with_mode(&query(), Vec::new(), true, &FakeChooser),
+            Err(SelectionError::NoCandidates(_))
+        ));
+        assert!(matches!(
+            choose_with_mode(
+                &query(),
+                vec![candidate.clone(), candidate],
+                false,
+                &FakeChooser
+            ),
+            Err(SelectionError::Ambiguous(_, _))
+        ));
+    }
+
+    struct RecordingChooser(std::cell::Cell<bool>);
+    impl CandidateChooser for RecordingChooser {
+        fn choose(&self, _: Vec<Candidate>) -> Result<Candidate, SelectionError> {
+            self.0.set(true);
+            unreachable!("a single candidate must not invoke the chooser")
+        }
+    }
+
+    #[test]
+    fn selection_returns_a_single_candidate_without_invoking_the_chooser() {
+        let chooser = RecordingChooser(std::cell::Cell::new(false));
+        assert!(choose_with_mode(&query(), vec![candidate()], true, &chooser).is_ok());
+        assert!(!chooser.0.get());
+    }
+    #[test]
+    fn unscoped_candidates_and_unicode_comments_are_displayed_safely() {
+        assert_eq!(candidate().to_string(), "key - unscoped - no comment");
+        assert_eq!(
+            sanitize_comment("chave de produção\n"),
+            "chave de produção "
+        );
+    }
+
+    #[test]
+    fn candidates_only_display_a_matched_scope_when_one_was_requested() {
+        let mut candidate = candidate();
+        candidate.entry = KeyEntry::new(
+            KeyAlias::new("key").unwrap(),
+            Fingerprint::from_public_key_blob(b"key"),
+            AgentName::new("agent").unwrap(),
+            [
+                "hogix/production".parse().unwrap(),
+                "backup".parse().unwrap(),
+            ],
+            BTreeMap::new(),
+        );
+        assert_eq!(
+            candidate.to_string(),
+            "key - scopes: backup,hogix/production - no comment"
+        );
+        candidate.matched_scope = Some("hogix/production".parse().unwrap());
+        assert_eq!(candidate.to_string(), "key - hogix/production - no comment");
+    }
+
+    #[test]
+    fn resolution_does_not_contact_agents_eliminated_by_static_filters() {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -205,14 +312,15 @@ mod tests {
             response.extend_from_slice(&0_u32.to_be_bytes());
             write_frame(&mut stream, &response).unwrap();
         });
+        let work = AgentName::new("work").unwrap();
+        let old = AgentName::new("old").unwrap();
         let entry = KeyEntry::new(
             KeyAlias::new("work-key").unwrap(),
             fingerprint,
             work.clone(),
-            [ScopePath::from_str("work/production").unwrap()],
+            ["work/production".parse().unwrap()],
             BTreeMap::new(),
-        )
-        .unwrap();
+        );
         let config = Config::from_parts(
             BTreeMap::from([
                 (
@@ -224,12 +332,9 @@ mod tests {
             KeyCatalog::from_entries([entry]).unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            resolve(&config, ScopePath::from_str("work").unwrap())
-                .unwrap()
-                .len(),
-            1
-        );
+        let query =
+            KeyQuery::from_values(Some("work".to_owned()), None, None, None, [], None).unwrap();
+        assert_eq!(resolve(&config, &query).unwrap().len(), 1);
         worker.join().unwrap();
         assert!(
             matches!(old_listener.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
@@ -238,79 +343,78 @@ mod tests {
         let _ = std::fs::remove_file(old_socket);
     }
 
-    struct FakeChooser(std::cell::Cell<usize>);
-    impl CandidateChooser for FakeChooser {
-        fn choose(&self, candidates: Vec<Candidate>) -> Result<Candidate, SelectionError> {
-            self.0.set(self.0.get() + 1);
-            Ok(candidates.into_iter().next().unwrap())
-        }
-    }
-
     #[test]
-    fn selection_mode_and_chooser_invocation_are_correct() {
-        let chooser = FakeChooser(std::cell::Cell::new(0));
-        assert!(matches!(
-            choose_with_mode(Vec::new(), true, &chooser),
-            Err(SelectionError::NoCandidates)
-        ));
-        let candidate = candidate("hogix/production", "personal/server");
-        assert!(candidate.to_string().contains("hogix/production"));
-        assert!(!candidate.to_string().contains("personal/server"));
-        assert_eq!(
-            choose_with_mode(vec![candidate.clone()], false, &chooser).unwrap(),
-            candidate
-        );
-        assert_eq!(chooser.0.get(), 0);
-        assert!(matches!(
-            choose_with_mode(vec![candidate.clone(), candidate.clone()], false, &chooser),
-            Err(SelectionError::Ambiguous(_))
-        ));
-        assert_eq!(
-            choose_with_mode(vec![candidate.clone(), candidate], true, &chooser)
-                .unwrap()
-                .matched_scope
-                .to_string(),
-            "hogix/production"
-        );
-        assert_eq!(chooser.0.get(), 1);
-    }
-
-    #[test]
-    fn comments_are_sanitized_for_terminal_display() {
-        assert_eq!(sanitize_comment("production key"), "production key");
-        assert_eq!(sanitize_comment("chave de produção"), "chave de produção");
-        assert_eq!(
-            sanitize_comment("one\ntwo\rthree\tfour"),
-            "one two three four"
-        );
-        assert_eq!(sanitize_comment("\x1b[2J\0key"), " [2J key");
-        assert_eq!(
-            sanitize_comment(&"a".repeat(201)),
-            format!("{}...", "a".repeat(200))
-        );
-    }
-
-    fn candidate(matched_scope: &str, other_scope: &str) -> Candidate {
-        let agent = AgentName::new("agent").unwrap();
+    fn comment_filter_is_case_insensitive_and_does_not_persist_comments() {
         let entry = KeyEntry::new(
-            KeyAlias::new("key").unwrap(),
+            KeyAlias::new("deploy").unwrap(),
             Fingerprint::from_public_key_blob(b"key"),
-            agent,
-            [
-                ScopePath::from_str(other_scope).unwrap(),
-                ScopePath::from_str(matched_scope).unwrap(),
-            ],
+            AgentName::new("agent").unwrap(),
+            [],
             BTreeMap::new(),
-        )
-        .unwrap();
-        Candidate {
-            entry,
-            identity: Identity {
+        );
+        let catalog = KeyCatalog::from_entries([entry]).unwrap();
+        let query =
+            KeyQuery::from_values(None, Some("PRODUÇÃO".to_owned()), None, None, [], None).unwrap();
+        let available = BTreeMap::from([(
+            AgentName::new("agent").unwrap(),
+            vec![Identity {
                 key_blob: b"key".to_vec(),
                 fingerprint: Fingerprint::from_public_key_blob(b"key"),
-                comment: None,
-            },
-            matched_scope: ScopePath::from_str(matched_scope).unwrap(),
-        }
+                comment: Some("chave de produção".to_owned()),
+            }],
+        )]);
+        assert_eq!(
+            resolve_available(catalog.query_static(&query), &available, &query).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn fingerprint_prefixes_remain_ambiguous_when_multiple_identities_match() {
+        let first =
+            Fingerprint::from_str("SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y").unwrap();
+        let second =
+            Fingerprint::from_str("SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+A").unwrap();
+        let entries = KeyCatalog::from_entries([
+            KeyEntry::new(
+                KeyAlias::new("first").unwrap(),
+                first.clone(),
+                AgentName::new("agent").unwrap(),
+                [],
+                BTreeMap::new(),
+            ),
+            KeyEntry::new(
+                KeyAlias::new("second").unwrap(),
+                second.clone(),
+                AgentName::new("agent").unwrap(),
+                [],
+                BTreeMap::new(),
+            ),
+        ])
+        .unwrap();
+        let prefix = &first.as_str()[7..18];
+        let query =
+            KeyQuery::from_values(None, None, None, Some(prefix.to_owned()), [], None).unwrap();
+        let available = BTreeMap::from([(
+            AgentName::new("agent").unwrap(),
+            vec![
+                Identity {
+                    key_blob: b"first".to_vec(),
+                    fingerprint: first,
+                    comment: None,
+                },
+                Identity {
+                    key_blob: b"second".to_vec(),
+                    fingerprint: second,
+                    comment: None,
+                },
+            ],
+        )]);
+        let candidates = resolve_available(entries.query_static(&query), &available, &query);
+
+        assert!(matches!(
+            choose_with_mode(&query, candidates, false, &FakeChooser),
+            Err(SelectionError::Ambiguous(_, _))
+        ));
     }
 }

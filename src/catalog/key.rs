@@ -131,19 +131,15 @@ impl KeyEntry {
         agent: AgentName,
         scopes: impl IntoIterator<Item = ScopePath>,
         tags: BTreeMap<String, String>,
-    ) -> Result<Self, KeyEntryError> {
+    ) -> Self {
         let scopes = scopes.into_iter().collect::<BTreeSet<_>>();
-        if scopes.is_empty() {
-            return Err(KeyEntryError::MissingScopes);
-        }
-
-        Ok(Self {
+        Self {
             alias,
             fingerprint,
             agent,
             scopes,
             tags,
-        })
+        }
     }
 
     pub fn alias(&self) -> &KeyAlias {
@@ -166,19 +162,6 @@ impl KeyEntry {
         &self.tags
     }
 }
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum KeyEntryError {
-    MissingScopes,
-}
-
-impl fmt::Display for KeyEntryError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("key entries must belong to at least one scope")
-    }
-}
-
-impl std::error::Error for KeyEntryError {}
 
 fn is_base64_character(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/')
