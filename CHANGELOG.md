@@ -11,7 +11,8 @@ Versioning.
 
 - Authorize every matching identity from one upstream agent for filtered command
   execution, instead of interactively reducing the set to one key.
-- Add `--select` for interactive selection of a subset of matching identities.
+- Add `--select` for interactive subset selection and use multi-selection for
+  ambiguous unfiltered interactive execution.
 
 ## [0.2.0] - 2026-09-20
 

@@ -408,7 +408,7 @@ impl fmt::Display for SelectionError {
             Self::NoCandidates(query) => write!(f, "no identities matched: {query}"),
             Self::Ambiguous(query, candidates) => write!(
                 f,
-                "multiple identities matched ({query}); run interactively to select one or add filters: {}",
+                "multiple identities matched ({query}); run interactively to select identities or add filters: {}",
                 candidates.join(", ")
             ),
             Self::Prompt(error) => write!(f, "identity selection failed: {error}"),
@@ -607,6 +607,142 @@ mod tests {
         }
     }
 
+    fn config_with_two_candidates(socket: &std::path::Path) -> Config {
+        let agent = AgentName::new("primary").unwrap();
+        Config::from_parts(
+            BTreeMap::from([(
+                agent.clone(),
+                AgentDefinition::new(agent.clone(), socket).unwrap(),
+            )]),
+            KeyCatalog::from_entries([
+                KeyEntry::new(
+                    KeyAlias::new("first").unwrap(),
+                    Fingerprint::from_public_key_blob(b"first-public-key"),
+                    agent.clone(),
+                    ["personal".parse().unwrap()],
+                    BTreeMap::new(),
+                ),
+                KeyEntry::new(
+                    KeyAlias::new("second").unwrap(),
+                    Fingerprint::from_public_key_blob(b"second-public-key"),
+                    agent,
+                    ["personal".parse().unwrap()],
+                    BTreeMap::new(),
+                ),
+            ])
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn write_identities(stream: &mut std::os::unix::net::UnixStream, blobs: &[&[u8]]) {
+        let mut response = vec![12];
+        response.extend_from_slice(&(blobs.len() as u32).to_be_bytes());
+        for blob in blobs {
+            response.extend_from_slice(&(blob.len() as u32).to_be_bytes());
+            response.extend_from_slice(blob);
+            response.extend_from_slice(&0_u32.to_be_bytes());
+        }
+        write_frame(stream, &response).unwrap();
+    }
+
+    #[test]
+    fn execution_policy_applies_filtered_and_interactive_selection_rules() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let socket = std::env::temp_dir().join(format!("kmux-policy-{unique}.sock"));
+        let listener = UnixListener::bind(&socket).unwrap();
+        let worker = thread::spawn(move || {
+            for _ in 0..5 {
+                let (mut stream, _) = listener.accept().unwrap();
+                assert_eq!(read_frame(&mut stream).unwrap(), [11]);
+                write_identities(&mut stream, &[b"first-public-key", b"second-public-key"]);
+            }
+        });
+        let config = config_with_two_candidates(&socket);
+        let filtered_query =
+            KeyQuery::from_values(Some("personal".to_owned()), None, None, None, [], None).unwrap();
+        let unselected = FirstCandidateSelector(std::cell::Cell::new(false));
+        assert_eq!(
+            resolve_for_execution_with(
+                &config,
+                &filtered_query,
+                true,
+                false,
+                true,
+                &FakeAgentChooser,
+                &unselected,
+            )
+            .unwrap()
+            .len(),
+            2
+        );
+        assert!(!unselected.0.get());
+
+        let filtered_selected = FirstCandidateSelector(std::cell::Cell::new(false));
+        assert_eq!(
+            resolve_for_execution_with(
+                &config,
+                &filtered_query,
+                true,
+                true,
+                true,
+                &FakeAgentChooser,
+                &filtered_selected,
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        assert!(filtered_selected.0.get());
+
+        let unfiltered_selected = FirstCandidateSelector(std::cell::Cell::new(false));
+        assert_eq!(
+            resolve_for_execution_with(
+                &config,
+                &query(),
+                false,
+                false,
+                true,
+                &FakeAgentChooser,
+                &unfiltered_selected,
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        assert!(unfiltered_selected.0.get());
+
+        assert!(matches!(
+            resolve_for_execution_with(
+                &config,
+                &query(),
+                false,
+                false,
+                false,
+                &FakeAgentChooser,
+                &FirstCandidateSelector(std::cell::Cell::new(false)),
+            ),
+            Err(SelectionError::Ambiguous(_, _))
+        ));
+        assert!(matches!(
+            resolve_for_execution_with(
+                &config,
+                &filtered_query,
+                true,
+                true,
+                false,
+                &FakeAgentChooser,
+                &FirstCandidateSelector(std::cell::Cell::new(false)),
+            ),
+            Err(SelectionError::Ambiguous(_, _))
+        ));
+        worker.join().unwrap();
+        let _ = std::fs::remove_file(socket);
+    }
+
     #[test]
     fn multiple_agents_require_an_interactive_choice() {
         let agents = BTreeSet::from([
@@ -634,17 +770,14 @@ mod tests {
         let primary_listener = UnixListener::bind(&primary_socket).unwrap();
         let secondary_listener = UnixListener::bind(&secondary_socket).unwrap();
         secondary_listener.set_nonblocking(true).unwrap();
-        let primary_blob = b"primary-public-key".to_vec();
-        let worker_blob = primary_blob.clone();
+        let primary_first_blob = b"primary-first-public-key".to_vec();
+        let primary_second_blob = b"primary-second-public-key".to_vec();
+        let worker_first_blob = primary_first_blob.clone();
+        let worker_second_blob = primary_second_blob.clone();
         let worker = thread::spawn(move || {
             let (mut stream, _) = primary_listener.accept().unwrap();
             assert_eq!(read_frame(&mut stream).unwrap(), [11]);
-            let mut response = vec![12];
-            response.extend_from_slice(&1_u32.to_be_bytes());
-            response.extend_from_slice(&(worker_blob.len() as u32).to_be_bytes());
-            response.extend_from_slice(&worker_blob);
-            response.extend_from_slice(&0_u32.to_be_bytes());
-            write_frame(&mut stream, &response).unwrap();
+            write_identities(&mut stream, &[&worker_first_blob, &worker_second_blob]);
         });
         let primary = AgentName::new("primary").unwrap();
         let secondary = AgentName::new("secondary").unwrap();
@@ -661,17 +794,24 @@ mod tests {
             ]),
             KeyCatalog::from_entries([
                 KeyEntry::new(
-                    KeyAlias::new("primary-key").unwrap(),
-                    Fingerprint::from_public_key_blob(&primary_blob),
+                    KeyAlias::new("primary-first").unwrap(),
+                    Fingerprint::from_public_key_blob(&primary_first_blob),
+                    primary.clone(),
+                    ["personal".parse().unwrap()],
+                    BTreeMap::new(),
+                ),
+                KeyEntry::new(
+                    KeyAlias::new("primary-second").unwrap(),
+                    Fingerprint::from_public_key_blob(&primary_second_blob),
                     primary,
-                    [],
+                    ["personal".parse().unwrap()],
                     BTreeMap::new(),
                 ),
                 KeyEntry::new(
                     KeyAlias::new("secondary-key").unwrap(),
                     Fingerprint::from_public_key_blob(b"secondary-public-key"),
                     secondary,
-                    [],
+                    ["personal".parse().unwrap()],
                     BTreeMap::new(),
                 ),
             ])
@@ -679,13 +819,15 @@ mod tests {
         )
         .unwrap();
         let selector = FirstCandidateSelector(std::cell::Cell::new(false));
+        let query =
+            KeyQuery::from_values(Some("personal".to_owned()), None, None, None, [], None).unwrap();
 
         assert_eq!(
             resolve_for_execution_with(
                 &config,
-                &query(),
-                false,
-                false,
+                &query,
+                true,
+                true,
                 true,
                 &FakeAgentChooser,
                 &selector,
@@ -694,7 +836,7 @@ mod tests {
             .len(),
             1
         );
-        assert!(!selector.0.get());
+        assert!(selector.0.get());
         worker.join().unwrap();
         assert!(
             matches!(secondary_listener.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)

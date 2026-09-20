@@ -15,7 +15,7 @@ use kmux::config::Config;
 pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
     if cli.command.is_some() && (!cli.execution.filters.is_empty() || cli.execution.select) {
         return Err(
-            "filters before a subcommand are only valid for direct command execution; use `kmux exec -s hogix ...`"
+            "execution options before a subcommand are only valid for direct command execution; use `kmux exec -s hogix ...`"
                 .into(),
         );
     }
@@ -149,7 +149,7 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("filters before a subcommand are only valid")
+                    .contains("execution options before a subcommand are only valid")
             );
         }
     }
