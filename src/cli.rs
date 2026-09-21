@@ -86,6 +86,9 @@ pub enum Command {
         #[command(subcommand)]
         command: ConfigCommand,
     },
+    Completions {
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Subcommand)]
@@ -155,6 +158,7 @@ pub enum KeyCommand {
 mod tests {
     use super::{AgentCommand, Cli, Command, ImportCommand, KeyCommand, OutputFormat};
     use clap::Parser;
+    use clap_complete::Shell;
 
     #[test]
     fn parses_root_execution_filters_and_the_child_command() {
@@ -304,6 +308,28 @@ mod tests {
     #[test]
     fn rejects_selection_for_keys() {
         assert!(Cli::try_parse_from(["kmux", "keys", "--select"]).is_err());
+    }
+
+    #[test]
+    fn parses_every_supported_completion_shell() {
+        for (value, expected) in [
+            ("bash", Shell::Bash),
+            ("zsh", Shell::Zsh),
+            ("fish", Shell::Fish),
+            ("elvish", Shell::Elvish),
+            ("powershell", Shell::PowerShell),
+        ] {
+            let cli = Cli::try_parse_from(["kmux", "completions", value]).unwrap();
+            let Some(Command::Completions { shell }) = cli.command else {
+                panic!("expected completions command");
+            };
+            assert_eq!(shell, expected);
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_completion_shell() {
+        assert!(Cli::try_parse_from(["kmux", "completions", "invalid"]).is_err());
     }
 
     #[test]

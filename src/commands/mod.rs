@@ -1,4 +1,5 @@
 mod agent;
+mod completions;
 mod diagnostics;
 mod exec;
 mod import;
@@ -21,6 +22,10 @@ pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
     }
     if let Some(Command::Init { format, force }) = &cli.command {
         init::initialize(cli.config.as_deref(), format.clone(), *force)?;
+        return Ok(0);
+    }
+    if let Some(Command::Completions { shell }) = &cli.command {
+        completions::generate(*shell);
         return Ok(0);
     }
     let path = Config::discover(cli.config.as_deref())?;
@@ -94,8 +99,13 @@ pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
         Some(Command::Keys { filters }) => list::print_keys(&config, &key_query(filters)?)?,
         Some(Command::Scopes) => list::print_scopes(&config),
         Some(Command::Doctor) => diagnostics::doctor(&config)?,
-        Some(Command::Init { .. } | Command::Agent { .. } | Command::Key { .. }) => {
-            unreachable!("mutating commands return before loading configuration")
+        Some(
+            Command::Init { .. }
+            | Command::Agent { .. }
+            | Command::Key { .. }
+            | Command::Completions { .. },
+        ) => {
+            unreachable!("commands that return before loading configuration")
         }
         None if !cli.child_command.is_empty() => {
             return execute(&config, cli.execution, cli.child_command);

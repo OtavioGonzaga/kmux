@@ -60,3 +60,102 @@ install -Dm755 target/release/kmux ~/.local/bin/kmux
 
 Use `git pull` followed by the build command to update a source checkout. Remove
 the installed binary and checkout when they are no longer needed.
+
+## Shell Completion
+
+Shell completion lets your shell suggest kmux commands, options, and supported
+values when you press Tab. kmux does not install or enable completion by itself:
+it prints a shell-specific script to standard output, and you choose whether to
+use it only in the current terminal or every time you open that shell.
+
+First, identify the shell running in your terminal:
+
+```bash
+echo "$SHELL"
+```
+
+The result commonly ends in `bash`, `zsh`, or `fish`. Use the matching section
+below. If you are unsure, start with the current-session command. Close and
+reopen the terminal to undo a current-session change.
+
+### Bash
+
+To enable completion in the current Bash session, run:
+
+```bash
+source <(kmux completions bash)
+```
+
+`source` reads the generated script into the current shell. Now type `kmux`,
+press Tab, and press Tab again if your shell does not show suggestions
+immediately.
+
+To enable it whenever Bash starts, add the same command to `~/.bashrc`:
+
+```bash
+printf '%s\n' 'source <(kmux completions bash)' >> ~/.bashrc
+```
+
+Open a new terminal, or reload that file in the current terminal:
+
+```bash
+source ~/.bashrc
+```
+
+### Zsh
+
+To try completion in the current Zsh session, run:
+
+```bash
+autoload -Uz compinit
+compinit
+source <(kmux completions zsh)
+```
+
+For persistent completion, save the generated function in a directory that Zsh
+searches for completion functions. `fpath` is Zsh's list of those directories.
+The following setup creates a user-owned directory, then writes the generated
+function into it:
+
+```bash
+mkdir -p ~/.local/share/zsh/site-functions
+kmux completions zsh > ~/.local/share/zsh/site-functions/_kmux
+```
+
+Add these lines to `~/.zshrc` if they are not already present:
+
+```zsh
+fpath=(~/.local/share/zsh/site-functions $fpath)
+autoload -Uz compinit
+compinit
+```
+
+Start a new Zsh session after saving the file. Do not add a second `compinit`
+block if your existing `~/.zshrc` already initializes completions; add only the
+`fpath` line before it instead.
+
+### Fish
+
+Fish automatically loads files from its completions directory. Create that
+directory if needed, then write kmux's generated script there:
+
+```bash
+mkdir -p ~/.config/fish/completions
+kmux completions fish > ~/.config/fish/completions/kmux.fish
+```
+
+Open a new Fish session, or run `source ~/.config/fish/completions/kmux.fish` in
+the current one.
+
+### Elvish And PowerShell
+
+Generate scripts for these shells with:
+
+```bash
+kmux completions elvish
+kmux completions powershell
+```
+
+The commands print the script rather than installing it. Consult your shell's
+documentation for its per-user profile or completion directory, then redirect
+the output to the location it documents.
