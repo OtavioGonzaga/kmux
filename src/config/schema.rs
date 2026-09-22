@@ -13,6 +13,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use tempfile::NamedTempFile;
+use toml_edit::{Array, DocumentMut, Item, Table, TableLike, value};
 
 const CONFIG_ENV: &str = "KMUX_CONFIG";
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
@@ -173,6 +174,8 @@ pub struct ConfigDocument {
     agents: BTreeMap<String, AgentDocument>,
     #[serde(default)]
     keys: BTreeMap<String, KeyDocument>,
+    #[serde(skip)]
+    toml: Option<DocumentMut>,
 }
 
 impl ConfigDocument {
@@ -182,6 +185,7 @@ impl ConfigDocument {
             version: SUPPORTED_VERSION,
             agents: BTreeMap::new(),
             keys: BTreeMap::new(),
+            toml: None,
         }
     }
 
@@ -212,7 +216,9 @@ impl ConfigDocument {
                 socket,
             },
         );
+        candidate = candidate.normalized();
         candidate.validate()?;
+        candidate.insert_toml_agent(&name)?;
         *self = candidate;
         Ok(())
     }
@@ -237,7 +243,9 @@ impl ConfigDocument {
             .ok_or_else(|| ConfigError::UnknownAgent(name.clone()))?;
         let mut candidate = self.clone();
         candidate.agents.remove(&key);
+        candidate = candidate.normalized();
         candidate.validate()?;
+        candidate.remove_toml_agent(&key)?;
         *self = candidate;
         Ok(())
     }
@@ -264,7 +272,9 @@ impl ConfigDocument {
                 comment: entry.comment().map(str::to_owned),
             },
         );
+        candidate = candidate.normalized();
         candidate.validate()?;
+        candidate.insert_toml_key(entry.alias().as_str())?;
         *self = candidate;
         Ok(())
     }
@@ -279,10 +289,104 @@ impl ConfigDocument {
             .ok_or_else(|| ConfigError::UnknownKey(alias.clone()))?;
         let mut candidate = self.clone();
         candidate.keys.remove(&key);
+        candidate = candidate.normalized();
         candidate.validate()?;
+        candidate.remove_toml_key(&key)?;
         *self = candidate;
         Ok(())
     }
+
+    fn matches_serialized(&self, other: &Self) -> bool {
+        self.version == other.version && self.agents == other.agents && self.keys == other.keys
+    }
+
+    fn insert_toml_agent(&mut self, name: &AgentName) -> Result<(), ConfigError> {
+        let Some(document) = self.toml.as_mut() else {
+            return Ok(());
+        };
+        let agent = self
+            .agents
+            .get(name.as_str())
+            .expect("added agent is present in the candidate document");
+        let agents = toml_root_table(document, "agents")?;
+        let mut item = Table::new();
+        item.insert("type", value("unix"));
+        item.insert("socket", value(agent.socket.to_string_lossy().as_ref()));
+        agents.insert(name.as_str(), Item::Table(item));
+        Ok(())
+    }
+
+    fn remove_toml_agent(&mut self, name: &str) -> Result<(), ConfigError> {
+        let Some(document) = self.toml.as_mut() else {
+            return Ok(());
+        };
+        let agents = toml_root_table(document, "agents")?;
+        agents.remove(name).ok_or_else(|| {
+            ConfigError::Serialize(format!(
+                "could not find agent '{name}' in the TOML document"
+            ))
+        })?;
+        Ok(())
+    }
+
+    fn insert_toml_key(&mut self, alias: &str) -> Result<(), ConfigError> {
+        let Some(document) = self.toml.as_mut() else {
+            return Ok(());
+        };
+        let key = self
+            .keys
+            .get(alias)
+            .expect("added key is present in the candidate document");
+        let keys = toml_root_table(document, "keys")?;
+        let mut item = Table::new();
+        item.insert("fingerprint", value(&key.fingerprint));
+        item.insert("agent", value(&key.agent));
+        if !key.scopes.is_empty() {
+            let mut scopes = Array::new();
+            for scope in &key.scopes {
+                scopes.push(scope);
+            }
+            item.insert("scopes", Item::Value(scopes.into()));
+        }
+        if let Some(comment) = &key.comment {
+            item.insert("comment", value(comment));
+        }
+        if !key.tags.is_empty() {
+            let mut tags = Table::new();
+            for (name, tag_value) in &key.tags {
+                tags.insert(name, value(tag_value));
+            }
+            item.insert("tags", Item::Table(tags));
+        }
+        keys.insert(alias, Item::Table(item));
+        Ok(())
+    }
+
+    fn remove_toml_key(&mut self, alias: &str) -> Result<(), ConfigError> {
+        let Some(document) = self.toml.as_mut() else {
+            return Ok(());
+        };
+        let keys = toml_root_table(document, "keys")?;
+        keys.remove(alias).ok_or_else(|| {
+            ConfigError::Serialize(format!("could not find key '{alias}' in the TOML document"))
+        })?;
+        Ok(())
+    }
+}
+
+fn toml_root_table<'a>(
+    document: &'a mut DocumentMut,
+    name: &str,
+) -> Result<&'a mut dyn TableLike, ConfigError> {
+    let item = document
+        .as_table_mut()
+        .entry(name)
+        .or_insert_with(|| Item::Table(Table::new()));
+    item.as_table_like_mut().ok_or_else(|| {
+        ConfigError::Serialize(format!(
+            "TOML field '{name}' must be a table or inline table to update it"
+        ))
+    })
 }
 
 /// Loads, discovers, and atomically persists configuration documents.
@@ -307,12 +411,20 @@ impl ConfigStore {
 
     /// Loads and validates a serialized configuration document.
     pub fn load(path: &Path) -> Result<ConfigDocument, ConfigError> {
-        let decoder: &dyn ConfigDecoder = match ConfigFormat::from_path(path)? {
+        let format = ConfigFormat::from_path(path)?;
+        let decoder: &dyn ConfigDecoder = match format {
             ConfigFormat::Yaml => &YamlConfigDecoder,
             ConfigFormat::Json => &JsonConfigDecoder,
             ConfigFormat::Toml => &TomlConfigDecoder,
         };
-        let document = decoder.decode(&read_config(path)?)?.normalized();
+        let source = read_config(path)?;
+        let mut document = decoder.decode(&source)?.normalized();
+        if format == ConfigFormat::Toml {
+            document.toml =
+                Some(source.parse().map_err(|error: toml_edit::TomlError| {
+                    ConfigError::Parse(error.to_string())
+                })?);
+        }
         document.validate()?;
         Ok(document)
     }
@@ -322,8 +434,21 @@ impl ConfigStore {
         let document = document.clone().normalized();
         document.validate()?;
         let output = match ConfigFormat::from_path(path)? {
-            ConfigFormat::Toml => toml::to_string_pretty(&document)
-                .map_err(|error| ConfigError::Serialize(error.to_string()))?,
+            ConfigFormat::Toml => match &document.toml {
+                Some(toml) => {
+                    let output = toml.to_string();
+                    let rendered = TomlConfigDecoder.decode(&output)?.normalized();
+                    rendered.validate()?;
+                    if !document.matches_serialized(&rendered) {
+                        return Err(ConfigError::Serialize(
+                            "edited TOML no longer matches the validated configuration".to_owned(),
+                        ));
+                    }
+                    output
+                }
+                None => toml::to_string_pretty(&document)
+                    .map_err(|error| ConfigError::Serialize(error.to_string()))?,
+            },
             ConfigFormat::Yaml => serde_saphyr::to_string(&document)
                 .map_err(|error| ConfigError::Serialize(error.to_string()))?,
             ConfigFormat::Json => serde_json::to_string_pretty(&document)
@@ -624,7 +749,7 @@ fn read_config(path: &Path) -> Result<String, ConfigError> {
     })
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentDocument {
     #[serde(rename = "type")]
@@ -632,13 +757,13 @@ struct AgentDocument {
     socket: PathBuf,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum AgentKind {
     Unix,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct KeyDocument {
     fingerprint: String,
@@ -670,6 +795,17 @@ mod tests {
     static TEMPORARY_PATH_ID: AtomicU64 = AtomicU64::new(0);
 
     const FINGERPRINT: &str = "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y";
+    const COMMENTED_TOML: &str = include_str!("../../tests/fixtures/commented-config.toml");
+    const INLINE_TOML: &str = concat!(
+        "version = 1\n\n",
+        "agents = { bitwarden = { type = \"unix\", socket = \"/tmp/bitwarden.sock\" } }\n\n",
+        "keys = { github = { fingerprint = \"SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y\", agent = \"bitwarden\" } }\n"
+    );
+    const DOTTED_TOML: &str = concat!(
+        "version = 1\n",
+        "agents.bitwarden.socket = \"/tmp/bitwarden.sock\"\n",
+        "agents.bitwarden.type = \"unix\"\n"
+    );
 
     fn config(format: &str) -> String {
         match format {
@@ -927,6 +1063,7 @@ mod tests {
                     comment: Some("Production deployment key".to_owned()),
                 },
             )]),
+            toml: None,
         }
     }
 
@@ -965,6 +1102,7 @@ mod tests {
                 },
             )]),
             keys: BTreeMap::new(),
+            toml: None,
         };
         assert!(ConfigStore::save(&path, &document).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
@@ -972,7 +1110,7 @@ mod tests {
     }
 
     #[test]
-    fn omits_empty_key_metadata_and_normalizes_empty_comments() {
+    fn omits_empty_new_key_metadata_and_preserves_loaded_empty_comments() {
         let directory = temporary_directory();
         let path = directory.join("config.toml");
         let mut document = ConfigDocument::empty();
@@ -1001,7 +1139,7 @@ mod tests {
         let loaded = ConfigStore::load(&path).unwrap();
         ConfigStore::save(&path, &loaded).unwrap();
         assert!(
-            !fs::read_to_string(&path)
+            fs::read_to_string(&path)
                 .unwrap()
                 .contains("comment = \"\"")
         );
@@ -1018,6 +1156,148 @@ mod tests {
                 .is_none()
         );
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn saving_a_loaded_toml_without_mutations_preserves_its_text() {
+        let path = write_config("toml", COMMENTED_TOML);
+        let document = ConfigStore::load(&path).unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), COMMENTED_TOML);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn toml_mutations_preserve_unaffected_comments_and_formatting() {
+        let path = write_config("toml", COMMENTED_TOML);
+        let mut document = ConfigStore::load(&path).unwrap();
+        let backup = AgentName::new("backup").unwrap();
+        document
+            .add_agent(backup.clone(), "/tmp/backup.sock".into())
+            .unwrap();
+        document
+            .add_key(KeyEntry::new(
+                KeyAlias::new("archive").unwrap(),
+                Fingerprint::from_str("SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+                    .unwrap(),
+                backup,
+                [ScopePath::from_str("personal/backup").unwrap()],
+                BTreeMap::from([("source.host".to_owned(), "backup".to_owned())]),
+            ))
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+
+        let output = fs::read_to_string(&path).unwrap();
+        for preserved in [
+            "# My personal SSH configuration\nversion = 1",
+            "# Password manager\n[agents.bitwarden]\ntype   = 'unix'\nsocket = '/tmp/bitwarden.sock' # Local socket",
+            "# GitHub personal identity\n[keys.github]\nfingerprint = 'SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y'\nagent       = 'bitwarden'\nscopes      = ['personal'] # Available to personal projects\ncomment = \"\"",
+            "[keys.github.tags]\nprovider = 'github'",
+        ] {
+            assert!(
+                output.contains(preserved),
+                "missing preserved text: {preserved}"
+            );
+        }
+        assert!(output.contains("[agents.backup]"));
+        assert!(output.contains("[keys.archive]"));
+        assert!(output.contains("[keys.archive.tags]"));
+        assert!(output.contains("\"source.host\" = \"backup\""));
+        assert!(output.find("[agents.bitwarden]").unwrap() < output.find("[keys.github]").unwrap());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn removing_toml_entries_keeps_unrelated_content() {
+        let path = write_config("toml", COMMENTED_TOML);
+        let mut document = ConfigStore::load(&path).unwrap();
+        document
+            .remove_key(&KeyAlias::new("github").unwrap())
+            .unwrap();
+        document
+            .add_agent(AgentName::new("backup").unwrap(), "/tmp/backup.sock".into())
+            .unwrap();
+        document
+            .remove_agent(&AgentName::new("backup").unwrap())
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+
+        let output = fs::read_to_string(&path).unwrap();
+        assert!(output.contains("# My personal SSH configuration\nversion = 1"));
+        assert!(output.contains("# Password manager\n[agents.bitwarden]\ntype   = 'unix'\nsocket = '/tmp/bitwarden.sock' # Local socket"));
+        assert!(!output.contains("[keys.github]"));
+        assert!(!output.contains("[keys.github.tags]"));
+        assert!(!output.contains("[agents.backup]"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn mutates_inline_agent_and_key_tables_without_converting_them() {
+        let path = write_config("toml", INLINE_TOML);
+        let mut document = ConfigStore::load(&path).unwrap();
+        document
+            .add_agent(AgentName::new("spare").unwrap(), "/tmp/spare.sock".into())
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("spare = { type = \"unix\", socket = \"/tmp/spare.sock\" }")
+        );
+        document
+            .remove_agent(&AgentName::new("spare").unwrap())
+            .unwrap();
+        document
+            .add_key(KeyEntry::new(
+                KeyAlias::new("archive").unwrap(),
+                Fingerprint::from_str("SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+                    .unwrap(),
+                AgentName::new("bitwarden").unwrap(),
+                [],
+                BTreeMap::new(),
+            ))
+            .unwrap();
+        document
+            .remove_key(&KeyAlias::new("github").unwrap())
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+
+        let output = fs::read_to_string(&path).unwrap();
+        assert!(output.contains("agents = { bitwarden = {"));
+        assert!(output.contains("keys = { archive = {"));
+        assert!(!output.contains("[agents."));
+        assert!(!output.contains("[keys."));
+        assert!(!output.contains("github"));
+        let config = ConfigStore::load(&path).unwrap().validate().unwrap();
+        assert_eq!(config.agents().len(), 1);
+        assert_eq!(config.catalog().entries().count(), 1);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn dotted_keys_remain_valid_after_an_unrelated_toml_mutation() {
+        let path = write_config("toml", DOTTED_TOML);
+        let mut document = ConfigStore::load(&path).unwrap();
+        document
+            .add_agent(AgentName::new("backup").unwrap(), "/tmp/backup.sock".into())
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+
+        let output = fs::read_to_string(&path).unwrap();
+        assert!(output.contains("agents.bitwarden.socket"));
+        assert!(ConfigStore::load(&path).unwrap().validate().is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn saving_toml_without_a_final_newline_adds_one() {
+        let path = write_config("toml", "version = 1");
+        let document = ConfigStore::load(&path).unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+
+        assert!(fs::read_to_string(&path).unwrap().ends_with('\n'));
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

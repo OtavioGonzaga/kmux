@@ -258,6 +258,8 @@ mod tests {
 
     const FIRST: &str = "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y";
     const SECOND: &str = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const THIRD: &str = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU";
+    const COMMENTED_TOML: &str = include_str!("../../tests/fixtures/commented-config.toml");
 
     #[test]
     fn comments_produce_deterministic_valid_aliases() {
@@ -426,6 +428,39 @@ mod tests {
         let plan = plan_import(&document, &config, &agent, vec![], vec![], vec![]).unwrap();
         assert!(plan.additions.is_empty());
         assert_eq!(plan.already_configured, 0);
+    }
+
+    #[test]
+    fn planner_preserves_loaded_toml_when_importing_multiple_keys() {
+        let path = std::env::temp_dir().join(format!(
+            "kmux-import-preserved-toml-{}-test.toml",
+            std::process::id()
+        ));
+        fs::write(&path, COMMENTED_TOML).unwrap();
+        let document = ConfigStore::load(&path).unwrap();
+        let config = document.validate().unwrap();
+        let agent = AgentName::new("bitwarden").unwrap();
+        let plan = plan_import(
+            &document,
+            &config,
+            &agent,
+            vec![
+                identity(Some("New Key"), SECOND),
+                identity(Some("Other Key"), THIRD),
+            ],
+            vec!["personal/imported".to_owned()],
+            vec!["source=agent".to_owned()],
+        )
+        .unwrap();
+
+        ConfigStore::save(&path, &plan.document).unwrap();
+        let output = fs::read_to_string(&path).unwrap();
+        assert!(output.contains("# My personal SSH configuration\nversion = 1"));
+        assert!(output.contains("# GitHub personal identity"));
+        assert!(output.contains("[keys.github.tags]\nprovider = 'github'"));
+        assert!(output.contains("[keys.new-key]"));
+        assert!(output.contains("[keys.other-key]"));
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
