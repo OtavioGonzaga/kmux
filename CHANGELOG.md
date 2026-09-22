@@ -7,6 +7,10 @@ Versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Add shell completion generation for Bash, Zsh, Fish, Elvish, and PowerShell.
+
 ## [0.3.0] - 2026-09-20
 
 ### Changed

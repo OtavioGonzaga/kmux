@@ -98,6 +98,26 @@ fn version_uses_the_binary_name_and_package_version() {
 }
 
 #[test]
+fn completions_do_not_require_configuration_or_an_ssh_agent() {
+    let directory = unique_path("completions");
+    std::fs::create_dir(&directory).unwrap();
+    let missing_config = directory.join("missing.toml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_kmux"))
+        .env("HOME", &directory)
+        .env("KMUX_CONFIG", &missing_config)
+        .env_remove("SSH_AUTH_SOCK")
+        .args(["completions", "bash"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "completion failed: {output:?}");
+    assert!(!missing_config.exists());
+    assert!(String::from_utf8(output.stdout).unwrap().contains("kmux"));
+    let _ = std::fs::remove_dir_all(directory);
+}
+
+#[test]
 fn keys_filters_configured_entries_without_an_agent_connection() {
     let directory = unique_path("keys-static-filter");
     std::fs::create_dir(&directory).unwrap();

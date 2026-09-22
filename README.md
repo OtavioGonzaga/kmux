@@ -63,12 +63,16 @@ kmux exec --key github-personal -- git fetch
 
 # Choose an interactive subset of otherwise matching identities.
 kmux --scope personal --select -- codex
+
+# Generate a Bash completion script.
+kmux completions bash
 ```
 
 Filters are combined with AND. A parent scope matches keys in descendant scopes.
 During execution, explicit filters authorize every matching identity from one
 upstream agent. Add `--select` to choose an interactive subset instead. See
 [selection](docs/selection.md) and the complete [CLI reference](docs/cli.md).
+See [installation](docs/installation.md) for shell completion setup.
 
 ## Configuration
 

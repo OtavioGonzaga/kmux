@@ -106,6 +106,18 @@ are omitted. `doctor` checks configuration and configured agents. `config check`
 loads and validates the configuration, printing `configuration is valid` on
 success.
 
+## Shell Completions
+
+```bash
+kmux completions SHELL
+```
+
+Generate a completion script for `bash`, `zsh`, `fish`, `elvish`, or
+`powershell`. The script is written to stdout. Generation uses only kmux's
+static Clap command tree: it does not load configuration or query SSH agents.
+See [installation](installation.md) for current-session and persistent setup
+instructions.
+
 ## Configuration Path
 
 `--config PATH` is a root option. With `init`, it defines the configuration file
