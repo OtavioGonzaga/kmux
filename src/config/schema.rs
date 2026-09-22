@@ -13,7 +13,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use tempfile::NamedTempFile;
-use toml_edit::{Array, DocumentMut, Item, Table, value};
+use toml_edit::{Array, DocumentMut, Item, Table, TableLike, value};
 
 const CONFIG_ENV: &str = "KMUX_CONFIG";
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
@@ -377,13 +377,15 @@ impl ConfigDocument {
 fn toml_root_table<'a>(
     document: &'a mut DocumentMut,
     name: &str,
-) -> Result<&'a mut Table, ConfigError> {
+) -> Result<&'a mut dyn TableLike, ConfigError> {
     let item = document
         .as_table_mut()
         .entry(name)
         .or_insert_with(|| Item::Table(Table::new()));
-    item.as_table_mut().ok_or_else(|| {
-        ConfigError::Serialize(format!("TOML field '{name}' must be a table to update it"))
+    item.as_table_like_mut().ok_or_else(|| {
+        ConfigError::Serialize(format!(
+            "TOML field '{name}' must be a table or inline table to update it"
+        ))
     })
 }
 
@@ -794,6 +796,16 @@ mod tests {
 
     const FINGERPRINT: &str = "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y";
     const COMMENTED_TOML: &str = include_str!("../../tests/fixtures/commented-config.toml");
+    const INLINE_TOML: &str = concat!(
+        "version = 1\n\n",
+        "agents = { bitwarden = { type = \"unix\", socket = \"/tmp/bitwarden.sock\" } }\n\n",
+        "keys = { github = { fingerprint = \"SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y\", agent = \"bitwarden\" } }\n"
+    );
+    const DOTTED_TOML: &str = concat!(
+        "version = 1\n",
+        "agents.bitwarden.socket = \"/tmp/bitwarden.sock\"\n",
+        "agents.bitwarden.type = \"unix\"\n"
+    );
 
     fn config(format: &str) -> String {
         match format {
@@ -1217,6 +1229,74 @@ mod tests {
         assert!(!output.contains("[keys.github]"));
         assert!(!output.contains("[keys.github.tags]"));
         assert!(!output.contains("[agents.backup]"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn mutates_inline_agent_and_key_tables_without_converting_them() {
+        let path = write_config("toml", INLINE_TOML);
+        let mut document = ConfigStore::load(&path).unwrap();
+        document
+            .add_agent(AgentName::new("spare").unwrap(), "/tmp/spare.sock".into())
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+        assert!(
+            fs::read_to_string(&path)
+                .unwrap()
+                .contains("spare = { type = \"unix\", socket = \"/tmp/spare.sock\" }")
+        );
+        document
+            .remove_agent(&AgentName::new("spare").unwrap())
+            .unwrap();
+        document
+            .add_key(KeyEntry::new(
+                KeyAlias::new("archive").unwrap(),
+                Fingerprint::from_str("SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+                    .unwrap(),
+                AgentName::new("bitwarden").unwrap(),
+                [],
+                BTreeMap::new(),
+            ))
+            .unwrap();
+        document
+            .remove_key(&KeyAlias::new("github").unwrap())
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+
+        let output = fs::read_to_string(&path).unwrap();
+        assert!(output.contains("agents = { bitwarden = {"));
+        assert!(output.contains("keys = { archive = {"));
+        assert!(!output.contains("[agents."));
+        assert!(!output.contains("[keys."));
+        assert!(!output.contains("github"));
+        let config = ConfigStore::load(&path).unwrap().validate().unwrap();
+        assert_eq!(config.agents().len(), 1);
+        assert_eq!(config.catalog().entries().count(), 1);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn dotted_keys_remain_valid_after_an_unrelated_toml_mutation() {
+        let path = write_config("toml", DOTTED_TOML);
+        let mut document = ConfigStore::load(&path).unwrap();
+        document
+            .add_agent(AgentName::new("backup").unwrap(), "/tmp/backup.sock".into())
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+
+        let output = fs::read_to_string(&path).unwrap();
+        assert!(output.contains("agents.bitwarden.socket"));
+        assert!(ConfigStore::load(&path).unwrap().validate().is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn saving_toml_without_a_final_newline_adds_one() {
+        let path = write_config("toml", "version = 1");
+        let document = ConfigStore::load(&path).unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+
+        assert!(fs::read_to_string(&path).unwrap().ends_with('\n'));
         fs::remove_file(path).unwrap();
     }
 

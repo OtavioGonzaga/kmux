@@ -69,7 +69,9 @@ configuration already exists. `agent add`, `agent remove`, `key add`,
 atomically replacing it. For an existing TOML configuration, these commands
 preserve comments, formatting, and the order of unaffected entries. New entries
 use kmux's canonical TOML formatting. YAML and JSON continue to use canonical
-serialization. Writes use private file permissions.
+serialization. `toml_edit` does not guarantee byte-for-byte preservation for
+dotted key ordering or an absent final newline. Writes use private file
+permissions.
 
 YAML supports bounded anchors and aliases, but rejects duplicate keys, merge
 keys, and multiple documents. Choose TOML unless interoperability requires YAML
