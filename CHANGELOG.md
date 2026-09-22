@@ -10,6 +10,7 @@ Versioning.
 ### Added
 
 - Add shell completion generation for Bash, Zsh, Fish, Elvish, and PowerShell.
+- Preserve comments and formatting when mutating an existing TOML configuration.
 
 ## [0.3.0] - 2026-09-20
 

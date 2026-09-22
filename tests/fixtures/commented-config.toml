@@ -1,0 +1,17 @@
+# My personal SSH configuration
+version = 1
+
+# Password manager
+[agents.bitwarden]
+type   = 'unix'
+socket = '/tmp/bitwarden.sock' # Local socket
+
+# GitHub personal identity
+[keys.github]
+fingerprint = 'SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y'
+agent       = 'bitwarden'
+scopes      = ['personal'] # Available to personal projects
+comment = ""
+
+[keys.github.tags]
+provider = 'github'

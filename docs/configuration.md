@@ -66,7 +66,10 @@ must be unique. Use `kmux config check` after manual edits.
 `kmux init` creates a minimal document and is idempotent when a supported
 configuration already exists. `agent add`, `agent remove`, `key add`,
 `key remove`, and `import agent` validate the complete document before
-atomically replacing it. Writes use private file permissions.
+atomically replacing it. For an existing TOML configuration, these commands
+preserve comments, formatting, and the order of unaffected entries. New entries
+use kmux's canonical TOML formatting. YAML and JSON continue to use canonical
+serialization. Writes use private file permissions.
 
 YAML supports bounded anchors and aliases, but rejects duplicate keys, merge
 keys, and multiple documents. Choose TOML unless interoperability requires YAML
