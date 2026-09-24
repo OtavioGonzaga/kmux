@@ -66,7 +66,8 @@ keys still reference the agent.
 kmux key add ALIAS [--agent NAME --fingerprint SHA256:...] \
   [--comment TEXT] [--scope SCOPE]... [--tag KEY=VALUE]...
 kmux key remove ALIAS [--yes]
-kmux keys [FILTERS]
+kmux keys [FILTERS] [--format table|tsv|json|yaml|toml]
+  [--json | --yaml | --toml] [--no-trunc]
 ```
 
 Run `key add ALIAS` with no key data flags to interactively choose an available
@@ -74,10 +75,17 @@ public identity. When any key data flag is supplied, both `--agent` and
 `--fingerprint` are required and no prompt is shown. `key remove` asks for
 confirmation unless `--yes` is supplied.
 
-`kmux keys` lists alias, fingerprint, agent, and comma-separated scopes from
-local configuration. It accepts filters, does not contact an upstream agent, and
-reports an unknown `--agent` name as an error. It does not accept `--select`,
-which only applies to command execution.
+`kmux keys` lists alias, agent, scopes, and abbreviated fingerprint in an
+aligned table by default. `--no-trunc` displays complete fingerprints in the
+table. When stdout is a terminal, the table adapts cell truncation to its
+detected width; redirected output keeps a stable width-independent layout.
+Choose `--format json|yaml|toml` (or the mutually exclusive `--json`, `--yaml`,
+and `--toml` shortcuts) for structured exports. `--format tsv` preserves the
+previous four-column, headerless tab-separated output for scripts. Structured
+exports include full fingerprints, scopes, tags, and optional comments. The
+command reads only local configuration; it accepts filters, does not contact an
+upstream agent, and reports an unknown `--agent` name as an error. It does not
+accept `--select`, which only applies to command execution.
 
 ## Import
 

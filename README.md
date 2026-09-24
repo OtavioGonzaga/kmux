@@ -26,6 +26,10 @@ kmux import agent bitwarden --scope personal
 # Inspect the local catalog before using it.
 kmux keys
 
+# Export structured data, or preserve the previous script output.
+kmux keys --json
+kmux keys --format tsv
+
 # Run OpenSSH with only identities in the personal scope exposed.
 kmux --scope personal -- ssh user@example.com
 ```
