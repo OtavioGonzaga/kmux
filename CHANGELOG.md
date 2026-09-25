@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-25
+
 ### Added
 
 - Add terminal-width-aware table output by default and JSON, YAML, TOML, and
