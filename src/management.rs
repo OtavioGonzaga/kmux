@@ -4,7 +4,7 @@
 
 use crate::agent::{AgentError, AgentName, UnixSocketAgent};
 use crate::catalog::{Identity, KeyAlias, KeyEntry};
-use crate::config::{Config, ConfigError, ConfigSnapshot, ConfigStore};
+use crate::config::{Config, ConfigDocument, ConfigError, ConfigSnapshot, ConfigStore};
 use crate::scope::ScopePath;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -82,6 +82,157 @@ pub fn inspect_agents(config: &Config, timeout: Duration) -> Vec<AgentInspection
             }
         })
         .collect()
+}
+
+/// Request to plan importing identities advertised by one configured agent.
+pub struct ImportRequest {
+    /// Agent that owns the imported identities.
+    pub agent: AgentName,
+    /// Public identities returned by the agent.
+    pub identities: Vec<Identity>,
+    /// Scopes assigned to each new key.
+    pub scopes: Vec<ScopePath>,
+    /// Tags assigned to each new key.
+    pub tags: BTreeMap<String, String>,
+}
+
+/// A reviewable import plan tied to the configuration revision it was derived from.
+pub struct ImportPlan {
+    snapshot: ConfigSnapshot,
+    document: ConfigDocument,
+    additions: Vec<KeyEntry>,
+    already_configured: usize,
+}
+
+impl ImportPlan {
+    /// New key entries proposed by this plan, in the order identities were supplied.
+    pub fn additions(&self) -> &[KeyEntry] {
+        &self.additions
+    }
+
+    /// Number of advertised identities already present in the configuration.
+    pub fn already_configured(&self) -> usize {
+        self.already_configured
+    }
+}
+
+/// Plans an import without writing configuration.
+///
+/// The resulting plan is bound to `snapshot`; [`apply_import`] rejects it if the
+/// configuration changes before application.
+pub fn plan_import(
+    snapshot: ConfigSnapshot,
+    request: ImportRequest,
+) -> Result<ImportPlan, ConfigError> {
+    let config = snapshot.document().validate()?;
+    if !config.agents().contains_key(&request.agent) {
+        return Err(ConfigError::UnknownAgent(request.agent));
+    }
+    if request
+        .tags
+        .iter()
+        .any(|(key, value)| key.is_empty() || value.is_empty())
+    {
+        return Err(ConfigError::Validation(
+            "tags must use non-empty KEY=VALUE syntax".to_owned(),
+        ));
+    }
+
+    let existing_fingerprints = config
+        .catalog()
+        .entries()
+        .map(|entry| entry.fingerprint().clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut seen_fingerprints = std::collections::BTreeSet::new();
+    let mut already_configured = 0;
+    let identities = request
+        .identities
+        .into_iter()
+        .filter(|identity| {
+            if !seen_fingerprints.insert(identity.fingerprint.clone()) {
+                false
+            } else if existing_fingerprints.contains(&identity.fingerprint) {
+                already_configured += 1;
+                false
+            } else {
+                true
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut used_aliases = config
+        .catalog()
+        .entries()
+        .map(|entry| entry.alias().clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut document = snapshot.document().clone();
+    let mut additions = Vec::with_capacity(identities.len());
+    for (index, identity) in identities.into_iter().enumerate() {
+        let base = identity
+            .comment
+            .as_deref()
+            .and_then(import_comment_alias)
+            .unwrap_or_else(|| format!("identity-{}", index + 1));
+        let mut suffix = 1;
+        let alias = loop {
+            let candidate = if suffix == 1 {
+                base.clone()
+            } else {
+                format!("{base}-{suffix}")
+            };
+            let alias = KeyAlias::new(candidate)
+                .map_err(|error| ConfigError::Validation(error.to_string()))?;
+            if used_aliases.insert(alias.clone()) {
+                break alias;
+            }
+            suffix += 1;
+        };
+        let entry = KeyEntry::new(
+            alias,
+            identity.fingerprint,
+            request.agent.clone(),
+            request.scopes.clone(),
+            request.tags.clone(),
+        )
+        .with_comment(identity.comment);
+        document.add_key(entry.clone())?;
+        additions.push(entry);
+    }
+    document.validate()?;
+
+    Ok(ImportPlan {
+        snapshot,
+        document,
+        additions,
+        already_configured,
+    })
+}
+
+/// Applies a previously reviewed import plan to its source file if its revision is unchanged.
+///
+/// Empty plans are successful no-ops, even if the source has changed since planning, because
+/// they do not write or replace any configuration data.
+pub fn apply_import(plan: &ImportPlan) -> Result<(), ConfigError> {
+    if plan.additions.is_empty() {
+        return Ok(());
+    }
+    ConfigStore::save_if_unchanged(plan.snapshot.source_path(), &plan.snapshot, &plan.document)
+}
+
+fn import_comment_alias(comment: &str) -> Option<String> {
+    let normalized = comment
+        .bytes()
+        .fold(String::new(), |mut alias, byte| {
+            if byte.is_ascii_alphanumeric() {
+                alias.push((byte as char).to_ascii_lowercase());
+            } else if !alias.is_empty() && !alias.ends_with('-') {
+                alias.push('-');
+            }
+            alias
+        })
+        .trim_matches('-')
+        .to_owned();
+    (!normalized.is_empty()).then_some(normalized)
 }
 
 /// Request to add a Unix-socket agent to a configuration.
@@ -184,12 +335,13 @@ pub fn update_key_metadata_if_unchanged(
 #[cfg(test)]
 mod tests {
     use super::{
-        AddAgentRequest, AddKeyRequest, AgentStatus, UpdateAgentRequest, UpdateKeyMetadataRequest,
-        add_agent, add_key, inspect_agents, remove_agent, remove_key, update_agent_socket,
-        update_key_metadata, update_key_metadata_if_unchanged,
+        AddAgentRequest, AddKeyRequest, AgentStatus, ImportRequest, UpdateAgentRequest,
+        UpdateKeyMetadataRequest, add_agent, add_key, apply_import, inspect_agents, plan_import,
+        remove_agent, remove_key, update_agent_socket, update_key_metadata,
+        update_key_metadata_if_unchanged,
     };
     use crate::agent::AgentName;
-    use crate::catalog::{Fingerprint, KeyAlias, KeyEntry};
+    use crate::catalog::{Fingerprint, Identity, KeyAlias, KeyEntry};
     use crate::config::{Config, ConfigDocument, ConfigError, ConfigStore};
     use crate::scope::ScopePath;
     use std::collections::BTreeMap;
@@ -200,6 +352,14 @@ mod tests {
     use std::str::FromStr;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
+
+    fn identity(fingerprint: &str, comment: Option<&str>) -> Identity {
+        Identity {
+            key_blob: Vec::new(),
+            fingerprint: Fingerprint::from_str(fingerprint).unwrap(),
+            comment: comment.map(str::to_owned),
+        }
+    }
 
     const FINGERPRINT: &str = "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y";
     static TEMPORARY_PATH_ID: AtomicU64 = AtomicU64::new(0);
@@ -532,6 +692,219 @@ mod tests {
         ));
         assert!(matches!(by_name["missing"], AgentStatus::Unavailable(_)));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn import_plan_is_reviewable_and_applies_transactionally() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let agent = AgentName::new("agent").unwrap();
+        let mut document = ConfigDocument::empty();
+        document
+            .add_agent(agent.clone(), directory.path().join("agent.sock"))
+            .unwrap();
+        document
+            .add_key(KeyEntry::new(
+                KeyAlias::new("existing").unwrap(),
+                Fingerprint::from_str("SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y")
+                    .unwrap(),
+                agent.clone(),
+                [],
+                BTreeMap::new(),
+            ))
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+
+        let plan = plan_import(
+            ConfigStore::load_versioned(&path).unwrap(),
+            ImportRequest {
+                agent,
+                identities: vec![
+                    identity(
+                        "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y",
+                        Some("Already"),
+                    ),
+                    identity(
+                        "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                        Some("New Key"),
+                    ),
+                ],
+                scopes: vec![ScopePath::from_str("company/production").unwrap()],
+                tags: BTreeMap::from([(String::from("source"), String::from("agent"))]),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.already_configured(), 1);
+        assert_eq!(plan.additions().len(), 1);
+        assert_eq!(plan.additions()[0].alias().as_str(), "new-key");
+        assert_eq!(plan.additions()[0].comment(), Some("New Key"));
+        apply_import(&plan).unwrap();
+        let imported = Config::load(&path).unwrap();
+        let entry = imported
+            .catalog()
+            .entries()
+            .find(|entry| entry.alias().as_str() == "new-key")
+            .unwrap();
+        assert_eq!(entry.scopes().len(), 1);
+        assert_eq!(
+            entry.tags().get("source").map(String::as_str),
+            Some("agent")
+        );
+    }
+
+    #[test]
+    fn import_plan_rejects_a_changed_configuration() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let agent = AgentName::new("agent").unwrap();
+        let mut document = ConfigDocument::empty();
+        document
+            .add_agent(agent.clone(), directory.path().join("agent.sock"))
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+        let plan = plan_import(
+            ConfigStore::load_versioned(&path).unwrap(),
+            ImportRequest {
+                agent,
+                identities: vec![identity(
+                    "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    Some("Planned"),
+                )],
+                scopes: vec![],
+                tags: BTreeMap::new(),
+            },
+        )
+        .unwrap();
+        ConfigStore::update(&path, |document| {
+            document.add_agent(
+                AgentName::new("other").unwrap(),
+                directory.path().join("other.sock"),
+            )
+        })
+        .unwrap();
+
+        assert!(matches!(apply_import(&plan), Err(ConfigError::Conflict(_))));
+        assert!(
+            Config::load(&path)
+                .unwrap()
+                .catalog()
+                .entries()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn applying_an_empty_import_plan_never_rewrites_its_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.yaml");
+        let initial = "version: 1\n# retained comment\nagents:\n  agent:\n    type: unix\n    socket: /tmp/agent.sock\nkeys: {}\n";
+        fs::write(&path, initial).unwrap();
+        let agent = AgentName::new("agent").unwrap();
+        let plan = plan_import(
+            ConfigStore::load_versioned(&path).unwrap(),
+            ImportRequest {
+                agent,
+                identities: vec![],
+                scopes: vec![],
+                tags: BTreeMap::new(),
+            },
+        )
+        .unwrap();
+        assert!(plan.additions().is_empty());
+
+        let changed = initial.replace("retained comment", "external edit");
+        fs::write(&path, &changed).unwrap();
+        apply_import(&plan).unwrap();
+        assert_eq!(fs::read_to_string(path).unwrap(), changed);
+    }
+
+    #[test]
+    fn import_plan_resolves_alias_collisions_deterministically() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let agent = AgentName::new("agent").unwrap();
+        let mut document = ConfigDocument::empty();
+        document
+            .add_agent(agent.clone(), directory.path().join("agent.sock"))
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+        let plan = plan_import(
+            ConfigStore::load_versioned(&path).unwrap(),
+            ImportRequest {
+                agent,
+                identities: vec![
+                    identity(
+                        "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y",
+                        Some("Deploy Key"),
+                    ),
+                    identity(
+                        "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                        Some("deploy-key"),
+                    ),
+                    identity(
+                        "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y",
+                        Some("Duplicate fingerprint"),
+                    ),
+                ],
+                scopes: vec![],
+                tags: BTreeMap::new(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.additions()
+                .iter()
+                .map(|entry| entry.alias().as_str())
+                .collect::<Vec<_>>(),
+            ["deploy-key", "deploy-key-2"]
+        );
+        assert_eq!(plan.already_configured(), 0);
+    }
+
+    #[test]
+    fn unusable_import_comments_use_deterministic_alias_fallbacks() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let agent = AgentName::new("agent").unwrap();
+        let mut document = ConfigDocument::empty();
+        document
+            .add_agent(agent.clone(), directory.path().join("agent.sock"))
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+        let plan = plan_import(
+            ConfigStore::load_versioned(&path).unwrap(),
+            ImportRequest {
+                agent,
+                identities: vec![
+                    identity(
+                        "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y",
+                        Some("  Multi___separator!!! Key  "),
+                    ),
+                    identity(
+                        "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                        Some("---"),
+                    ),
+                    identity(
+                        "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU",
+                        Some(""),
+                    ),
+                ],
+                scopes: vec![],
+                tags: BTreeMap::new(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.additions()
+                .iter()
+                .map(|entry| entry.alias().as_str())
+                .collect::<Vec<_>>(),
+            ["multi-separator-key", "identity-2", "identity-3"]
+        );
     }
 
     #[test]
