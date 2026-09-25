@@ -336,6 +336,11 @@ impl ConfigDocument {
             .find(|existing| KeyAlias::new(existing).ok().as_ref() == Some(alias))
             .cloned()
             .ok_or_else(|| ConfigError::UnknownKey(alias.clone()))?;
+        let existing = self.keys.get(&key).expect("key alias was found");
+        let scopes_changed =
+            existing.scopes != scopes.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let tags_changed = existing.tags != tags;
+        let comment_changed = existing.comment != comment;
         let mut candidate = self.clone();
         let key_document = candidate.keys.get_mut(&key).expect("key alias was found");
         key_document.scopes = scopes.iter().map(ToString::to_string).collect();
@@ -349,7 +354,17 @@ impl ConfigDocument {
             .expect("key alias was found")
             .comment
             .clone();
-        candidate.update_toml_key_metadata(&key, &scopes, &tags, normalized_comment.as_deref())?;
+        candidate.update_toml_key_metadata(
+            &key,
+            &scopes,
+            &tags,
+            normalized_comment.as_deref(),
+            (
+                scopes_changed,
+                tags_changed,
+                comment_changed || comment.as_deref().is_some_and(str::is_empty),
+            ),
+        )?;
         *self = candidate;
         Ok(())
     }
@@ -463,7 +478,9 @@ impl ConfigDocument {
         scopes: &[ScopePath],
         tags: &BTreeMap<String, String>,
         comment: Option<&str>,
+        changed: (bool, bool, bool),
     ) -> Result<(), ConfigError> {
+        let (scopes_changed, tags_changed, comment_changed) = changed;
         let Some(document) = self.toml.as_mut() else {
             return Ok(());
         };
@@ -477,21 +494,25 @@ impl ConfigDocument {
                 ))
             })?;
 
-        let scopes_item = if scopes.is_empty() {
-            None
-        } else {
-            let mut array = Array::new();
-            for scope in scopes {
-                array.push(scope.to_string());
-            }
-            Some(Item::Value(array.into()))
-        };
-        set_toml_field(key, "scopes", scopes_item)?;
-        set_toml_field(key, "comment", comment.map(value))?;
+        if scopes_changed {
+            let scopes_item = if scopes.is_empty() {
+                None
+            } else {
+                let mut array = Array::new();
+                for scope in scopes {
+                    array.push(scope.to_string());
+                }
+                Some(Item::Value(array.into()))
+            };
+            set_toml_field(key, "scopes", scopes_item)?;
+        }
+        if comment_changed {
+            set_toml_field(key, "comment", comment.map(value))?;
+        }
 
-        if tags.is_empty() {
+        if tags_changed && tags.is_empty() {
             key.remove("tags");
-        } else {
+        } else if tags_changed {
             let tags_table = key
                 .entry("tags")
                 .or_insert_with(|| Item::Table(Table::new()))

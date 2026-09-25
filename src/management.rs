@@ -4,7 +4,7 @@
 
 use crate::agent::AgentName;
 use crate::catalog::{KeyAlias, KeyEntry};
-use crate::config::{ConfigError, ConfigStore};
+use crate::config::{ConfigError, ConfigSnapshot, ConfigStore};
 use crate::scope::ScopePath;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -87,15 +87,35 @@ pub fn update_key_metadata(
     })
 }
 
+/// Updates key metadata only if the configuration still matches a previously loaded snapshot.
+///
+/// Use this when replacement metadata was derived from a configuration read earlier. Any
+/// intervening change causes a conflict rather than silently overwriting that change.
+pub fn update_key_metadata_if_unchanged(
+    path: &Path,
+    snapshot: &ConfigSnapshot,
+    request: UpdateKeyMetadataRequest,
+) -> Result<(), ConfigError> {
+    let mut document = snapshot.document().clone();
+    document.update_key_metadata(
+        &request.alias,
+        request.scopes,
+        request.tags,
+        request.comment,
+    )?;
+    ConfigStore::save_if_unchanged(path, snapshot, &document)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         AddAgentRequest, AddKeyRequest, UpdateAgentRequest, UpdateKeyMetadataRequest, add_agent,
         add_key, remove_agent, remove_key, update_agent_socket, update_key_metadata,
+        update_key_metadata_if_unchanged,
     };
     use crate::agent::AgentName;
     use crate::catalog::{Fingerprint, KeyAlias, KeyEntry};
-    use crate::config::{Config, ConfigDocument, ConfigStore};
+    use crate::config::{Config, ConfigDocument, ConfigError, ConfigStore};
     use crate::scope::ScopePath;
     use std::collections::BTreeMap;
     use std::fs;
@@ -257,6 +277,106 @@ mod tests {
         assert_eq!(
             entry.tags().get("source").map(String::as_str),
             Some("vault")
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn tag_only_update_preserves_multiline_scope_array_verbatim() {
+        let directory = temporary_directory();
+        let path = directory.join("config.toml");
+        fs::write(
+            &path,
+            format!(
+                "version = 1\n\n[agents.work]\ntype = 'unix'\nsocket = '/tmp/work.sock'\n\n[keys.deploy]\nfingerprint = '{FINGERPRINT}'\nagent = 'work'\nscopes = [\n  'company/production', # Production environment\n  'personal',           # Personal use\n]\ncomment = 'keep single quotes'\n\n[keys.deploy.tags]\nprovider = 'old'\n"
+            ),
+        )
+        .unwrap();
+        let before = fs::read_to_string(&path).unwrap();
+        let scopes_before = before
+            .split("scopes = [")
+            .nth(1)
+            .unwrap()
+            .split("]\n")
+            .next()
+            .unwrap()
+            .to_owned();
+
+        update_key_metadata(
+            &path,
+            UpdateKeyMetadataRequest {
+                alias: KeyAlias::new("deploy").unwrap(),
+                scopes: vec![
+                    ScopePath::from_str("company/production").unwrap(),
+                    ScopePath::from_str("personal").unwrap(),
+                ],
+                tags: BTreeMap::from([("provider".to_owned(), "new".to_owned())]),
+                comment: Some("keep single quotes".to_owned()),
+            },
+        )
+        .unwrap();
+
+        let after = fs::read_to_string(&path).unwrap();
+        let scopes_after = after
+            .split("scopes = [")
+            .nth(1)
+            .unwrap()
+            .split("]\n")
+            .next()
+            .unwrap();
+        assert_eq!(scopes_after, scopes_before);
+        assert!(after.contains("comment = 'keep single quotes'"));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn versioned_metadata_update_rejects_stale_snapshot() {
+        let directory = temporary_directory();
+        let path = directory.join("config.toml");
+        fs::write(
+            &path,
+            format!(
+                "version = 1\n\n[agents.work]\ntype = 'unix'\nsocket = '/tmp/work.sock'\n\n[keys.deploy]\nfingerprint = '{FINGERPRINT}'\nagent = 'work'\nscopes = ['old']\n\n[keys.deploy.tags]\nprovider = 'old'\n"
+            ),
+        )
+        .unwrap();
+        let stale = ConfigStore::load_versioned(&path).unwrap();
+        update_key_metadata(
+            &path,
+            UpdateKeyMetadataRequest {
+                alias: KeyAlias::new("deploy").unwrap(),
+                scopes: vec![ScopePath::from_str("new/scope").unwrap()],
+                tags: BTreeMap::from([("provider".to_owned(), "old".to_owned())]),
+                comment: None,
+            },
+        )
+        .unwrap();
+
+        let result = update_key_metadata_if_unchanged(
+            &path,
+            &stale,
+            UpdateKeyMetadataRequest {
+                alias: KeyAlias::new("deploy").unwrap(),
+                scopes: vec![ScopePath::from_str("old").unwrap()],
+                tags: BTreeMap::from([("provider".to_owned(), "new".to_owned())]),
+                comment: None,
+            },
+        );
+        assert!(matches!(result, Err(ConfigError::Conflict(_))));
+        let entry = Config::load(&path)
+            .unwrap()
+            .catalog()
+            .entries()
+            .next()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            entry.scopes().iter().next().unwrap().to_string(),
+            "new/scope"
+        );
+        assert_eq!(
+            entry.tags().get("provider").map(String::as_str),
+            Some("old")
         );
         fs::remove_dir_all(directory).unwrap();
     }

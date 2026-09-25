@@ -10,7 +10,8 @@ Versioning.
 ### Changed
 
 - Expose reusable management APIs for agents and keys, including socket and
-  key-metadata updates that preserve unrelated TOML formatting.
+  key-metadata updates that preserve unrelated TOML formatting and support
+  revision-checked metadata updates.
 - Serialize configuration writes with a process lock, add revision-checked
   saves, and migrate agent/key mutations and agent imports to transactional
   updates.
