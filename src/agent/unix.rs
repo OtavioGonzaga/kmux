@@ -5,6 +5,7 @@ use std::fmt;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 const REQUEST_IDENTITIES: u8 = 11;
 const IDENTITIES_ANSWER: u8 = 12;
@@ -40,7 +41,26 @@ impl UnixSocketAgent {
 
 impl UpstreamAgent for UnixSocketAgent {
     fn identities(&self) -> Result<Vec<Identity>, AgentError> {
-        let mut stream = self.connect()?;
+        self.identities_with_timeout(None)
+    }
+
+    fn connect(&self) -> Result<UnixStream, AgentError> {
+        UnixStream::connect(&self.socket).map_err(AgentError::Connect)
+    }
+}
+
+impl UnixSocketAgent {
+    /// Retrieves identities with a timeout for connecting, reading, and writing.
+    pub fn identities_with_timeout(
+        &self,
+        timeout: Option<Duration>,
+    ) -> Result<Vec<Identity>, AgentError> {
+        let mut stream = match timeout {
+            Some(timeout) => connect_with_timeout(&self.socket, timeout)?,
+            None => self.connect()?,
+        };
+        stream.set_read_timeout(timeout).map_err(AgentError::Io)?;
+        stream.set_write_timeout(timeout).map_err(AgentError::Io)?;
         write_frame(&mut stream, &[REQUEST_IDENTITIES])?;
         let response = read_frame(&mut stream)?;
         let mut reader = Reader::new(&response);
@@ -66,10 +86,56 @@ impl UpstreamAgent for UnixSocketAgent {
         }
         Ok(identities)
     }
+}
 
-    fn connect(&self) -> Result<UnixStream, AgentError> {
-        UnixStream::connect(&self.socket).map_err(AgentError::Connect)
+fn connect_with_timeout(path: &Path, timeout: Duration) -> Result<UnixStream, AgentError> {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    use rustix::net::sockopt::socket_error;
+
+    if timeout.is_zero() {
+        return Err(AgentError::Connect(std::io::Error::from(
+            rustix::io::Errno::TIMEDOUT,
+        )));
     }
+    use rustix::net::{
+        AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connect, socket_with,
+    };
+
+    let fd = socket_with(
+        AddressFamily::UNIX,
+        SocketType::STREAM,
+        SocketFlags::CLOEXEC | SocketFlags::NONBLOCK,
+        None,
+    )
+    .map_err(|error| AgentError::Connect(error.into()))?;
+    let address = SocketAddrUnix::new(path).map_err(|error| AgentError::Connect(error.into()))?;
+    match connect(&fd, &address) {
+        Ok(()) => {}
+        Err(error)
+            if error == rustix::io::Errno::INPROGRESS || error == rustix::io::Errno::WOULDBLOCK =>
+        {
+            let timeout = Timespec {
+                tv_sec: timeout.as_secs().try_into().unwrap_or(i64::MAX),
+                tv_nsec: timeout.subsec_nanos().into(),
+            };
+            let mut poll_fd = [PollFd::new(&fd, PollFlags::IN | PollFlags::OUT)];
+            if poll(&mut poll_fd, Some(&timeout))
+                .map_err(|error| AgentError::Connect(error.into()))?
+                == 0
+            {
+                return Err(AgentError::Connect(std::io::Error::from(
+                    rustix::io::Errno::TIMEDOUT,
+                )));
+            }
+            socket_error(&fd)
+                .map_err(|error| AgentError::Connect(error.into()))?
+                .map_err(|error| AgentError::Connect(error.into()))?;
+        }
+        Err(error) => return Err(AgentError::Connect(error.into())),
+    }
+    let stream = UnixStream::from(fd);
+    stream.set_nonblocking(false).map_err(AgentError::Connect)?;
+    Ok(stream)
 }
 
 #[derive(Debug)]

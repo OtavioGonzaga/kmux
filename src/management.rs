@@ -2,12 +2,85 @@
 //!
 //! These operations mutate configuration transactionally and do not perform terminal I/O.
 
-use crate::agent::AgentName;
-use crate::catalog::{KeyAlias, KeyEntry};
-use crate::config::{ConfigError, ConfigSnapshot, ConfigStore};
+use crate::agent::{AgentError, AgentName, UnixSocketAgent};
+use crate::catalog::{Identity, KeyAlias, KeyEntry};
+use crate::config::{Config, ConfigError, ConfigSnapshot, ConfigStore};
 use crate::scope::ScopePath;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// Runtime inspection result for one configured upstream agent.
+#[derive(Debug)]
+pub struct AgentInspection {
+    /// Normalized configured agent name.
+    pub name: AgentName,
+    /// Configured Unix socket path.
+    pub socket: PathBuf,
+    /// Outcome of querying this agent.
+    pub status: AgentStatus,
+}
+
+/// Outcome of an individual upstream-agent query.
+#[derive(Debug)]
+pub enum AgentStatus {
+    /// Agent responded successfully with its advertised public identities.
+    Available(Vec<Identity>),
+    /// Agent could not be reached or communication failed.
+    Unavailable(AgentError),
+    /// Agent responded with an invalid or unexpected protocol message.
+    ProtocolError(AgentError),
+    /// Connecting or communicating with the agent exceeded the configured timeout.
+    TimedOut,
+}
+
+/// Inspects every configured agent independently, returning partial results.
+///
+/// `timeout` bounds the socket connection and each blocking read/write operation. A failed or
+/// timed-out agent is represented in its own result and does not stop other queries.
+pub fn inspect_agents(config: &Config, timeout: Duration) -> Vec<AgentInspection> {
+    config
+        .agents()
+        .values()
+        .map(|definition| {
+            let status = if timeout.is_zero() {
+                AgentStatus::TimedOut
+            } else {
+                match UnixSocketAgent::new(definition.socket().to_owned())
+                    .identities_with_timeout(Some(timeout))
+                {
+                    Ok(identities) => AgentStatus::Available(identities),
+                    Err(error @ AgentError::UnexpectedResponse)
+                    | Err(error @ AgentError::MalformedResponse) => {
+                        AgentStatus::ProtocolError(error)
+                    }
+                    Err(AgentError::Io(error))
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                        ) =>
+                    {
+                        AgentStatus::TimedOut
+                    }
+                    Err(AgentError::Connect(error))
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                        ) =>
+                    {
+                        AgentStatus::TimedOut
+                    }
+                    Err(error) => AgentStatus::Unavailable(error),
+                }
+            };
+            AgentInspection {
+                name: definition.name().clone(),
+                socket: definition.socket().to_owned(),
+                status,
+            }
+        })
+        .collect()
+}
 
 /// Request to add a Unix-socket agent to a configuration.
 pub struct AddAgentRequest {
@@ -109,9 +182,9 @@ pub fn update_key_metadata_if_unchanged(
 #[cfg(test)]
 mod tests {
     use super::{
-        AddAgentRequest, AddKeyRequest, UpdateAgentRequest, UpdateKeyMetadataRequest, add_agent,
-        add_key, remove_agent, remove_key, update_agent_socket, update_key_metadata,
-        update_key_metadata_if_unchanged,
+        AddAgentRequest, AddKeyRequest, AgentStatus, UpdateAgentRequest, UpdateKeyMetadataRequest,
+        add_agent, add_key, inspect_agents, remove_agent, remove_key, update_agent_socket,
+        update_key_metadata, update_key_metadata_if_unchanged,
     };
     use crate::agent::AgentName;
     use crate::catalog::{Fingerprint, KeyAlias, KeyEntry};
@@ -119,9 +192,12 @@ mod tests {
     use crate::scope::ScopePath;
     use std::collections::BTreeMap;
     use std::fs;
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
     use std::str::FromStr;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Duration;
 
     const FINGERPRINT: &str = "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y";
     static TEMPORARY_PATH_ID: AtomicU64 = AtomicU64::new(0);
@@ -378,6 +454,67 @@ mod tests {
             entry.tags().get("provider").map(String::as_str),
             Some("old")
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn agent_inspection_returns_independent_partial_results() {
+        let directory = temporary_directory();
+        let config_path = directory.join("config.toml");
+        ConfigStore::save(&config_path, &ConfigDocument::empty()).unwrap();
+
+        let available_socket = directory.join("available.sock");
+        let available_listener = UnixListener::bind(&available_socket).unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = available_listener.accept().unwrap();
+            let mut request = [0; 5];
+            stream.read_exact(&mut request).unwrap();
+            stream.write_all(&[0, 0, 0, 5, 12, 0, 0, 0, 0]).unwrap();
+        });
+
+        let slow_socket = directory.join("slow.sock");
+        let slow_listener = UnixListener::bind(&slow_socket).unwrap();
+        std::thread::spawn(move || {
+            let (_stream, _) = slow_listener.accept().unwrap();
+            std::thread::sleep(Duration::from_millis(150));
+        });
+
+        let protocol_socket = directory.join("protocol.sock");
+        let protocol_listener = UnixListener::bind(&protocol_socket).unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = protocol_listener.accept().unwrap();
+            let mut request = [0; 5];
+            stream.read_exact(&mut request).unwrap();
+            stream.write_all(&[0, 0, 0, 1, 5]).unwrap();
+        });
+
+        for (name, socket) in [
+            ("available", available_socket),
+            ("slow", slow_socket),
+            ("protocol", protocol_socket),
+            ("missing", directory.join("missing.sock")),
+        ] {
+            add_agent(
+                &config_path,
+                AddAgentRequest {
+                    name: AgentName::new(name).unwrap(),
+                    socket,
+                },
+            )
+            .unwrap();
+        }
+        let config = Config::load(&config_path).unwrap();
+        let results = inspect_agents(&config, Duration::from_millis(30));
+
+        assert_eq!(results.len(), 4);
+        let by_name = results
+            .iter()
+            .map(|result| (result.name.as_str(), &result.status))
+            .collect::<BTreeMap<_, _>>();
+        assert!(matches!(by_name["available"], AgentStatus::Available(ids) if ids.is_empty()));
+        assert!(matches!(by_name["slow"], AgentStatus::TimedOut));
+        assert!(matches!(by_name["protocol"], AgentStatus::ProtocolError(_)));
+        assert!(matches!(by_name["missing"], AgentStatus::Unavailable(_)));
         fs::remove_dir_all(directory).unwrap();
     }
 

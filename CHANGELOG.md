@@ -9,6 +9,9 @@ Versioning.
 
 ### Changed
 
+- Add public per-agent inspection with independent availability, protocol-error,
+  and timeout results, without failing the full inspection when one agent is
+  unavailable.
 - Expose reusable management APIs for agents and keys, including socket and
   key-metadata updates that preserve unrelated TOML formatting and support
   revision-checked metadata updates.
