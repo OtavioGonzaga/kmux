@@ -9,6 +9,8 @@ Versioning.
 
 ### Changed
 
+- Expose reusable import planning and revision-checked application APIs; keep
+  import presentation and agent querying in the CLI.
 - Add public per-agent inspection with independent availability, protocol-error,
   and timeout results. Enforce a total per-agent deadline across connection and
   full-frame I/O, and classify truncated response frames as protocol errors.
