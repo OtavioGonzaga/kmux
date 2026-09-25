@@ -1,5 +1,6 @@
 use kmux::agent::AgentName;
-use kmux::config::{ConfigPath, ConfigStore};
+use kmux::config::ConfigPath;
+use kmux::management::{AddAgentRequest, add_agent, remove_agent};
 use std::path::PathBuf;
 
 pub fn add(
@@ -8,15 +9,13 @@ pub fn add(
     socket: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let name = AgentName::new(name)?;
-    ConfigStore::update(path.as_path(), move |document| {
-        document.add_agent(name, socket)
-    })?;
+    add_agent(path.as_path(), AddAgentRequest { name, socket })?;
     Ok(())
 }
 
 pub fn remove(path: &ConfigPath, name: String) -> Result<(), Box<dyn std::error::Error>> {
     let name = AgentName::new(name)?;
-    ConfigStore::update(path.as_path(), move |document| document.remove_agent(&name))?;
+    remove_agent(path.as_path(), name)?;
     Ok(())
 }
 

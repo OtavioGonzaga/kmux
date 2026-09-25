@@ -252,6 +252,30 @@ impl ConfigDocument {
         Ok(())
     }
 
+    /// Updates an agent's socket after validating the resulting document.
+    pub fn update_agent_socket(
+        &mut self,
+        name: &AgentName,
+        socket: PathBuf,
+    ) -> Result<(), ConfigError> {
+        let key = self
+            .agents
+            .keys()
+            .find(|existing| AgentName::new(existing).ok().as_ref() == Some(name))
+            .cloned()
+            .ok_or_else(|| ConfigError::UnknownAgent(name.clone()))?;
+        let mut candidate = self.clone();
+        candidate
+            .agents
+            .get_mut(&key)
+            .expect("agent key was found")
+            .socket = socket.clone();
+        candidate.validate()?;
+        candidate.update_toml_agent_socket(&key, &socket)?;
+        *self = candidate;
+        Ok(())
+    }
+
     /// Adds a key entry after validating the resulting document.
     pub fn add_key(&mut self, entry: KeyEntry) -> Result<(), ConfigError> {
         if self.keys.keys().any(|existing| {
@@ -298,6 +322,53 @@ impl ConfigDocument {
         Ok(())
     }
 
+    /// Replaces a key's scopes, tags, and comment without changing its identity or agent.
+    pub fn update_key_metadata(
+        &mut self,
+        alias: &KeyAlias,
+        scopes: Vec<ScopePath>,
+        tags: BTreeMap<String, String>,
+        comment: Option<String>,
+    ) -> Result<(), ConfigError> {
+        let key = self
+            .keys
+            .keys()
+            .find(|existing| KeyAlias::new(existing).ok().as_ref() == Some(alias))
+            .cloned()
+            .ok_or_else(|| ConfigError::UnknownKey(alias.clone()))?;
+        let existing = self.keys.get(&key).expect("key alias was found");
+        let scopes_changed =
+            existing.scopes != scopes.iter().map(ToString::to_string).collect::<Vec<_>>();
+        let tags_changed = existing.tags != tags;
+        let comment_changed = existing.comment != comment;
+        let mut candidate = self.clone();
+        let key_document = candidate.keys.get_mut(&key).expect("key alias was found");
+        key_document.scopes = scopes.iter().map(ToString::to_string).collect();
+        key_document.tags = tags.clone();
+        key_document.comment = comment.clone();
+        candidate = candidate.normalized();
+        candidate.validate()?;
+        let normalized_comment = candidate
+            .keys
+            .get(&key)
+            .expect("key alias was found")
+            .comment
+            .clone();
+        candidate.update_toml_key_metadata(
+            &key,
+            &scopes,
+            &tags,
+            normalized_comment.as_deref(),
+            (
+                scopes_changed,
+                tags_changed,
+                comment_changed || comment.as_deref().is_some_and(str::is_empty),
+            ),
+        )?;
+        *self = candidate;
+        Ok(())
+    }
+
     fn matches_serialized(&self, other: &Self) -> bool {
         self.version == other.version && self.agents == other.agents && self.keys == other.keys
     }
@@ -335,6 +406,26 @@ impl ConfigDocument {
             ))
         })?;
         Ok(())
+    }
+
+    fn update_toml_agent_socket(&mut self, name: &str, socket: &Path) -> Result<(), ConfigError> {
+        let Some(document) = self.toml.as_mut() else {
+            return Ok(());
+        };
+        let agents = toml_root_table(document, "agents")?;
+        let agent = agents
+            .get_mut(name)
+            .and_then(Item::as_table_like_mut)
+            .ok_or_else(|| {
+                ConfigError::Serialize(format!(
+                    "could not find agent '{name}' as a TOML table to update"
+                ))
+            })?;
+        set_toml_field(
+            agent,
+            "socket",
+            Some(value(socket.to_string_lossy().as_ref())),
+        )
     }
 
     fn insert_toml_key(&mut self, alias: &str) -> Result<(), ConfigError> {
@@ -380,6 +471,103 @@ impl ConfigDocument {
         })?;
         Ok(())
     }
+
+    fn update_toml_key_metadata(
+        &mut self,
+        alias: &str,
+        scopes: &[ScopePath],
+        tags: &BTreeMap<String, String>,
+        comment: Option<&str>,
+        changed: (bool, bool, bool),
+    ) -> Result<(), ConfigError> {
+        let (scopes_changed, tags_changed, comment_changed) = changed;
+        let Some(document) = self.toml.as_mut() else {
+            return Ok(());
+        };
+        let keys = toml_root_table(document, "keys")?;
+        let key = keys
+            .get_mut(alias)
+            .and_then(Item::as_table_like_mut)
+            .ok_or_else(|| {
+                ConfigError::Serialize(format!(
+                    "could not find key '{alias}' as a TOML table to update"
+                ))
+            })?;
+
+        if scopes_changed {
+            let scopes_item = if scopes.is_empty() {
+                None
+            } else {
+                let mut array = Array::new();
+                for scope in scopes {
+                    array.push(scope.to_string());
+                }
+                Some(Item::Value(array.into()))
+            };
+            set_toml_field(key, "scopes", scopes_item)?;
+        }
+        if comment_changed {
+            set_toml_field(key, "comment", comment.map(value))?;
+        }
+
+        if tags_changed && tags.is_empty() {
+            key.remove("tags");
+        } else if tags_changed {
+            let tags_table = key
+                .entry("tags")
+                .or_insert_with(|| Item::Table(Table::new()))
+                .as_table_like_mut()
+                .ok_or_else(|| {
+                    ConfigError::Serialize(format!(
+                        "TOML field 'keys.{alias}.tags' must be a table to update it"
+                    ))
+                })?;
+            let old_names = tags_table
+                .iter()
+                .map(|(name, _)| name.to_owned())
+                .collect::<Vec<_>>();
+            for name in old_names {
+                if !tags.contains_key(&name) {
+                    tags_table.remove(&name);
+                }
+            }
+            for (name, tag_value) in tags {
+                set_toml_field(tags_table, name, Some(value(tag_value)))?;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn set_toml_field(
+    table: &mut dyn TableLike,
+    name: &str,
+    replacement: Option<Item>,
+) -> Result<(), ConfigError> {
+    match (table.get_mut(name), replacement) {
+        (Some(current), Some(replacement)) => {
+            let Some(current_value) = current.as_value_mut() else {
+                return Err(ConfigError::Serialize(format!(
+                    "TOML field '{name}' must be a value to update it"
+                )));
+            };
+            let Ok(mut replacement_value) = replacement.into_value() else {
+                return Err(ConfigError::Serialize(format!(
+                    "replacement for TOML field '{name}' is not a value"
+                )));
+            };
+            *replacement_value.decor_mut() = current_value.decor().clone();
+            *current_value = replacement_value;
+        }
+        (None, Some(replacement)) => {
+            table.insert(name, replacement);
+        }
+        (Some(_), None) => {
+            table.remove(name);
+        }
+        (None, None) => {}
+    }
+    Ok(())
 }
 
 /// An opaque content revision used to detect changes made since a configuration was loaded.
