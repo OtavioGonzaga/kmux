@@ -1,4 +1,4 @@
-use kmux::agent::{AgentDefinition, AgentName};
+use kmux::agent::AgentName;
 use kmux::config::{ConfigPath, ConfigStore};
 use std::path::PathBuf;
 
@@ -8,18 +8,15 @@ pub fn add(
     socket: PathBuf,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let name = AgentName::new(name)?;
-    AgentDefinition::new(name.clone(), socket.clone())?;
-    let mut document = ConfigStore::load(path.as_path())?;
-    document.add_agent(name, socket)?;
-    ConfigStore::save(path.as_path(), &document)?;
+    ConfigStore::update(path.as_path(), move |document| {
+        document.add_agent(name, socket)
+    })?;
     Ok(())
 }
 
 pub fn remove(path: &ConfigPath, name: String) -> Result<(), Box<dyn std::error::Error>> {
     let name = AgentName::new(name)?;
-    let mut document = ConfigStore::load(path.as_path())?;
-    document.remove_agent(&name)?;
-    ConfigStore::save(path.as_path(), &document)?;
+    ConfigStore::update(path.as_path(), move |document| document.remove_agent(&name))?;
     Ok(())
 }
 
