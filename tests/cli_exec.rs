@@ -146,6 +146,28 @@ fn keys_filters_configured_entries_without_an_agent_connection() {
     assert!(output.status.success());
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
+        "KEY         AGENT    SCOPES              FINGERPRINT\nproduction  primary  company/production  SHA256:Wda9mr6okK…\n"
+    );
+
+    let tsv = Command::new(env!("CARGO_BIN_EXE_kmux"))
+        .args([
+            "--config",
+            config.to_str().unwrap(),
+            "keys",
+            "--scope",
+            "company",
+            "--comment",
+            "aws",
+            "--agent",
+            "primary",
+            "--format",
+            "tsv",
+        ])
+        .output()
+        .unwrap();
+    assert!(tsv.status.success());
+    assert_eq!(
+        String::from_utf8(tsv.stdout).unwrap(),
         "production\tSHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y\tprimary\tcompany/production\n"
     );
 
@@ -162,7 +184,10 @@ fn keys_filters_configured_entries_without_an_agent_connection() {
         .output()
         .unwrap();
     assert!(empty.status.success());
-    assert!(empty.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(empty.stdout).unwrap(),
+        "KEY  AGENT  SCOPES  FINGERPRINT\n"
+    );
 
     let unknown = Command::new(env!("CARGO_BIN_EXE_kmux"))
         .args([

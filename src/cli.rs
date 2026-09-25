@@ -69,6 +69,16 @@ pub enum Command {
     Keys {
         #[command(flatten)]
         filters: FilterArgs,
+        #[arg(long, conflicts_with_all = ["yaml", "toml", "format"])]
+        json: bool,
+        #[arg(long, conflicts_with_all = ["json", "toml", "format"])]
+        yaml: bool,
+        #[arg(long, conflicts_with_all = ["json", "yaml", "format"])]
+        toml: bool,
+        #[arg(long, value_enum, conflicts_with_all = ["json", "yaml", "toml"])]
+        format: Option<KeysFormat>,
+        #[arg(long)]
+        no_trunc: bool,
     },
     Scopes,
     Doctor,
@@ -112,6 +122,16 @@ pub enum ImportCommand {
 pub enum OutputFormat {
     Yaml,
     Json,
+    Toml,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum KeysFormat {
+    #[default]
+    Table,
+    Tsv,
+    Json,
+    Yaml,
     Toml,
 }
 
@@ -293,7 +313,7 @@ mod tests {
             "primary",
         ])
         .unwrap();
-        let Some(Command::Keys { filters }) = cli.command else {
+        let Some(Command::Keys { filters, .. }) = cli.command else {
             panic!("expected keys command");
         };
 
@@ -308,6 +328,30 @@ mod tests {
     #[test]
     fn rejects_selection_for_keys() {
         assert!(Cli::try_parse_from(["kmux", "keys", "--select"]).is_err());
+    }
+
+    #[test]
+    fn parses_key_output_formats_and_rejects_conflicting_options() {
+        for args in [
+            vec!["kmux", "keys", "--json"],
+            vec!["kmux", "keys", "--yaml"],
+            vec!["kmux", "keys", "--toml"],
+            vec!["kmux", "keys", "--format", "table"],
+            vec!["kmux", "keys", "--format", "tsv"],
+            vec!["kmux", "keys", "--format", "json"],
+            vec!["kmux", "keys", "--format", "yaml"],
+            vec!["kmux", "keys", "--format", "toml"],
+            vec!["kmux", "keys", "--no-trunc"],
+        ] {
+            Cli::try_parse_from(args).unwrap();
+        }
+        for args in [
+            vec!["kmux", "keys", "--json", "--yaml"],
+            vec!["kmux", "keys", "--json", "--format", "table"],
+            vec!["kmux", "keys", "--toml", "--format", "json"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err());
+        }
     }
 
     #[test]

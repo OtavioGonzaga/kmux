@@ -96,7 +96,25 @@ pub fn run(cli: Cli) -> Result<i32, Box<dyn std::error::Error>> {
         Some(Command::Config {
             command: ConfigCommand::Check,
         }) => println!("configuration is valid"),
-        Some(Command::Keys { filters }) => list::print_keys(&config, &key_query(filters)?)?,
+        Some(Command::Keys {
+            filters,
+            json,
+            yaml,
+            toml,
+            format,
+            no_trunc,
+        }) => {
+            let format = if json {
+                crate::cli::KeysFormat::Json
+            } else if yaml {
+                crate::cli::KeysFormat::Yaml
+            } else if toml {
+                crate::cli::KeysFormat::Toml
+            } else {
+                format.unwrap_or_default()
+            };
+            list::print_keys(&config, &key_query(filters)?, format, no_trunc)?
+        }
         Some(Command::Scopes) => list::print_scopes(&config),
         Some(Command::Doctor) => diagnostics::doctor(&config)?,
         Some(

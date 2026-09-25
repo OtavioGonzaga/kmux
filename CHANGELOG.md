@@ -9,6 +9,8 @@ Versioning.
 
 ### Added
 
+- Add terminal-width-aware table output by default and JSON, YAML, TOML, and
+  compatible TSV exports to `kmux keys`.
 - Add shell completion generation for Bash, Zsh, Fish, Elvish, and PowerShell.
 - Preserve comments and formatting when mutating an existing TOML configuration.
 
