@@ -302,6 +302,12 @@ impl ConfigDocument {
         self.version == other.version && self.agents == other.agents && self.keys == other.keys
     }
 
+    fn is_unchanged_from(&self, other: &Self) -> bool {
+        self.matches_serialized(other)
+            && self.toml.as_ref().map(ToString::to_string)
+                == other.toml.as_ref().map(ToString::to_string)
+    }
+
     fn insert_toml_agent(&mut self, name: &AgentName) -> Result<(), ConfigError> {
         let Some(document) = self.toml.as_mut() else {
             return Ok(());
@@ -471,20 +477,32 @@ impl ConfigStore {
     ///
     /// The lock is held while `mutate` runs, so cooperating writers cannot overwrite one another.
     /// A content revision is checked again before persistence to detect edits by non-cooperating
-    /// writers.
+    /// writers. Detection of non-cooperating writers is best-effort: such writers do not acquire
+    /// this lock, so an edit in the small interval between the final revision check and atomic
+    /// replacement cannot be excluded.
     pub fn update<F>(path: &Path, mutate: F) -> Result<(), ConfigError>
     where
         F: FnOnce(&mut ConfigDocument) -> Result<(), ConfigError>,
     {
         let _lock = ConfigLock::acquire(path)?;
         let snapshot = Self::load_versioned(path)?;
+        let original = snapshot.document.clone();
         let mut document = snapshot.document;
         mutate(&mut document)?;
         document.validate()?;
+        if document.is_unchanged_from(&original) {
+            if current_revision(path)?.as_ref() != Some(&snapshot.revision) {
+                return Err(ConfigError::Conflict(path.to_owned()));
+            }
+            return Ok(());
+        }
         Self::save_unlocked(path, &document, Some(&snapshot.revision))
     }
 
     /// Saves a document only if the file still has the revision in `snapshot`.
+    ///
+    /// Cooperating writers are serialized by the process lock. Detection of changes by
+    /// non-cooperating tools is best-effort; edits can still race the final atomic replacement.
     pub fn save_if_unchanged(
         path: &Path,
         snapshot: &ConfigSnapshot,
@@ -494,8 +512,13 @@ impl ConfigStore {
         Self::save_unlocked(path, document, Some(&snapshot.revision))
     }
 
-    /// Validates and atomically writes a document with private permissions.
+    /// Validates and atomically writes a document with private permissions under the process lock.
+    ///
+    /// This operation is unconditional with respect to the document's origin. Use
+    /// [`Self::save_if_unchanged`] when the document was derived from a previously loaded file and
+    /// overwriting intervening edits would be unsafe.
     pub fn save(path: &Path, document: &ConfigDocument) -> Result<(), ConfigError> {
+        let _lock = ConfigLock::acquire(path)?;
         Self::save_unlocked(path, document, None)
     }
 
@@ -955,6 +978,8 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::process::Command;
     use std::str::FromStr;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1552,6 +1577,76 @@ mod tests {
                 .agents()
                 .contains_key(&AgentName::new("second").unwrap())
         );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn config_update_worker() {
+        let Ok(path) = std::env::var("KMUX_TEST_CONFIG_UPDATE_PATH") else {
+            return;
+        };
+        let name = std::env::var("KMUX_TEST_CONFIG_UPDATE_AGENT").unwrap();
+        ConfigStore::update(Path::new(&path), |document| {
+            document.add_agent(
+                AgentName::new(name).unwrap(),
+                "/tmp/process-agent.sock".into(),
+            )
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn independent_process_updates_preserve_both_changes() {
+        let directory = temporary_directory();
+        let path = directory.join("config.toml");
+        ConfigStore::save(&path, &ConfigDocument::empty()).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let mut children = ["process-first", "process-second"].map(|name| {
+            Command::new(&executable)
+                .arg("--exact")
+                .arg("config::schema::tests::config_update_worker")
+                .env("KMUX_TEST_CONFIG_UPDATE_PATH", &path)
+                .env("KMUX_TEST_CONFIG_UPDATE_AGENT", name)
+                .spawn()
+                .unwrap()
+        });
+        for child in &mut children {
+            assert!(child.wait().unwrap().success());
+        }
+
+        let config = ConfigStore::load(&path).unwrap().validate().unwrap();
+        assert!(
+            config
+                .agents()
+                .contains_key(&AgentName::new("process-first").unwrap())
+        );
+        assert!(
+            config
+                .agents()
+                .contains_key(&AgentName::new("process-second").unwrap())
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn external_edit_during_update_returns_conflict_without_overwriting() {
+        let directory = temporary_directory();
+        let path = directory.join("config.toml");
+        ConfigStore::save(&path, &ConfigDocument::empty()).unwrap();
+        let external_content = "version = [externally, changed\n";
+
+        let result = ConfigStore::update(&path, |document| {
+            fs::write(&path, external_content).map_err(|source| ConfigError::Write {
+                path: path.clone(),
+                source,
+            })?;
+            document.add_agent(AgentName::new("work").unwrap(), "/tmp/work.sock".into())
+        });
+
+        assert!(
+            matches!(result, Err(ConfigError::Conflict(conflict_path)) if conflict_path == path)
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), external_content);
         fs::remove_dir_all(directory).unwrap();
     }
 

@@ -9,8 +9,9 @@ Versioning.
 
 ### Changed
 
-- Add process-locked configuration updates and revision-checked saves to prevent
-  cooperating writers from losing changes and to detect external edits.
+- Serialize configuration writes with a process lock, add revision-checked
+  saves, and migrate agent/key mutations and agent imports to transactional
+  updates.
 
 ## [0.4.0] - 2026-09-25
 
