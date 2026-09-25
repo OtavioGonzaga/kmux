@@ -1,6 +1,7 @@
 use kmux::agent::{AgentName, UnixSocketAgent, UpstreamAgent};
 use kmux::catalog::{Fingerprint, Identity, KeyAlias, KeyEntry};
 use kmux::config::{ConfigPath, ConfigStore};
+use kmux::management::{AddKeyRequest, add_key, remove_key};
 use kmux::scope::ScopePath;
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, stdin};
@@ -71,7 +72,7 @@ fn add_with(
     } else {
         interactive_entry_with(&document.validate()?, alias, prompter, identities)?
     };
-    ConfigStore::update(path.as_path(), move |document| document.add_key(entry))?;
+    add_key(path.as_path(), AddKeyRequest { entry })?;
     Ok(())
 }
 
@@ -98,7 +99,7 @@ fn remove_with(
             return Ok(());
         }
     }
-    ConfigStore::update(path.as_path(), move |document| document.remove_key(&alias))?;
+    remove_key(path.as_path(), alias)?;
     Ok(())
 }
 

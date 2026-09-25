@@ -10,6 +10,7 @@
 //! - [`agent`] communicates with Unix-socket upstream agents.
 //! - [`catalog`] stores configured public identities and queries them.
 //! - [`config`] loads, validates, and atomically writes configuration.
+//! - [`management`] provides reusable transactional operations for agents and keys.
 //! - [`proxy`] serves a filtered SSH Agent.
 //! - [`scope`] models hierarchical scopes.
 //! - [`selection`] resolves configured identities available upstream.
@@ -20,6 +21,8 @@ pub mod agent;
 pub mod catalog;
 /// Configuration discovery, validation, and atomic persistence.
 pub mod config;
+/// Reusable administrative operations for configured agents and keys.
+pub mod management;
 /// The filtered SSH Agent proxy.
 pub mod proxy;
 /// Hierarchical key-selection scopes.
