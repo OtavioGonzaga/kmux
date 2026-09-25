@@ -36,8 +36,9 @@ pub enum AgentStatus {
 
 /// Inspects every configured agent independently, returning partial results.
 ///
-/// `timeout` bounds the socket connection and each blocking read/write operation. A failed or
-/// timed-out agent is represented in its own result and does not stop other queries.
+/// `timeout` is a total per-agent deadline covering connection, request writing, and the complete
+/// response frame. Agents are queried sequentially; each slow agent is bounded by this deadline.
+/// A failed or timed-out agent is represented in its own result and does not stop other queries.
 pub fn inspect_agents(config: &Config, timeout: Duration) -> Vec<AgentInspection> {
     config
         .agents()
@@ -51,7 +52,8 @@ pub fn inspect_agents(config: &Config, timeout: Duration) -> Vec<AgentInspection
                 {
                     Ok(identities) => AgentStatus::Available(identities),
                     Err(error @ AgentError::UnexpectedResponse)
-                    | Err(error @ AgentError::MalformedResponse) => {
+                    | Err(error @ AgentError::MalformedResponse)
+                    | Err(error @ AgentError::TruncatedResponse) => {
                         AgentStatus::ProtocolError(error)
                     }
                     Err(AgentError::Io(error))
@@ -488,10 +490,20 @@ mod tests {
             stream.write_all(&[0, 0, 0, 1, 5]).unwrap();
         });
 
+        let truncated_socket = directory.join("truncated.sock");
+        let truncated_listener = UnixListener::bind(&truncated_socket).unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = truncated_listener.accept().unwrap();
+            let mut request = [0; 5];
+            stream.read_exact(&mut request).unwrap();
+            stream.write_all(&[0, 0, 0, 5, 12, 0]).unwrap();
+        });
+
         for (name, socket) in [
             ("available", available_socket),
             ("slow", slow_socket),
             ("protocol", protocol_socket),
+            ("truncated", truncated_socket),
             ("missing", directory.join("missing.sock")),
         ] {
             add_agent(
@@ -506,7 +518,7 @@ mod tests {
         let config = Config::load(&config_path).unwrap();
         let results = inspect_agents(&config, Duration::from_millis(30));
 
-        assert_eq!(results.len(), 4);
+        assert_eq!(results.len(), 5);
         let by_name = results
             .iter()
             .map(|result| (result.name.as_str(), &result.status))
@@ -514,6 +526,10 @@ mod tests {
         assert!(matches!(by_name["available"], AgentStatus::Available(ids) if ids.is_empty()));
         assert!(matches!(by_name["slow"], AgentStatus::TimedOut));
         assert!(matches!(by_name["protocol"], AgentStatus::ProtocolError(_)));
+        assert!(matches!(
+            by_name["truncated"],
+            AgentStatus::ProtocolError(_)
+        ));
         assert!(matches!(by_name["missing"], AgentStatus::Unavailable(_)));
         fs::remove_dir_all(directory).unwrap();
     }
