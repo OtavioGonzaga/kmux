@@ -105,7 +105,7 @@ pub struct ImportPlan {
 }
 
 impl ImportPlan {
-    /// New key entries proposed by this plan, in deterministic alias order.
+    /// New key entries proposed by this plan, in the order identities were supplied.
     pub fn additions(&self) -> &[KeyEntry] {
         &self.additions
     }
@@ -138,21 +138,24 @@ pub fn plan_import(
         ));
     }
 
-    let mut fingerprints = config
+    let existing_fingerprints = config
         .catalog()
         .entries()
         .map(|entry| entry.fingerprint().clone())
         .collect::<std::collections::BTreeSet<_>>();
+    let mut seen_fingerprints = std::collections::BTreeSet::new();
     let mut already_configured = 0;
     let identities = request
         .identities
         .into_iter()
         .filter(|identity| {
-            if fingerprints.insert(identity.fingerprint.clone()) {
-                true
-            } else {
+            if !seen_fingerprints.insert(identity.fingerprint.clone()) {
+                false
+            } else if existing_fingerprints.contains(&identity.fingerprint) {
                 already_configured += 1;
                 false
+            } else {
+                true
             }
         })
         .collect::<Vec<_>>();
@@ -205,9 +208,15 @@ pub fn plan_import(
     })
 }
 
-/// Applies a previously reviewed import plan if its source configuration is unchanged.
-pub fn apply_import(path: &Path, plan: &ImportPlan) -> Result<(), ConfigError> {
-    ConfigStore::save_if_unchanged(path, &plan.snapshot, &plan.document)
+/// Applies a previously reviewed import plan to its source file if its revision is unchanged.
+///
+/// Empty plans are successful no-ops, even if the source has changed since planning, because
+/// they do not write or replace any configuration data.
+pub fn apply_import(plan: &ImportPlan) -> Result<(), ConfigError> {
+    if plan.additions.is_empty() {
+        return Ok(());
+    }
+    ConfigStore::save_if_unchanged(plan.snapshot.source_path(), &plan.snapshot, &plan.document)
 }
 
 fn import_comment_alias(comment: &str) -> Option<String> {
@@ -730,7 +739,7 @@ mod tests {
         assert_eq!(plan.additions().len(), 1);
         assert_eq!(plan.additions()[0].alias().as_str(), "new-key");
         assert_eq!(plan.additions()[0].comment(), Some("New Key"));
-        apply_import(&path, &plan).unwrap();
+        apply_import(&plan).unwrap();
         let imported = Config::load(&path).unwrap();
         let entry = imported
             .catalog()
@@ -775,10 +784,7 @@ mod tests {
         })
         .unwrap();
 
-        assert!(matches!(
-            apply_import(&path, &plan),
-            Err(ConfigError::Conflict(_))
-        ));
+        assert!(matches!(apply_import(&plan), Err(ConfigError::Conflict(_))));
         assert!(
             Config::load(&path)
                 .unwrap()
@@ -787,6 +793,31 @@ mod tests {
                 .next()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn applying_an_empty_import_plan_never_rewrites_its_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.yaml");
+        let initial = "version: 1\n# retained comment\nagents:\n  agent:\n    type: unix\n    socket: /tmp/agent.sock\nkeys: {}\n";
+        fs::write(&path, initial).unwrap();
+        let agent = AgentName::new("agent").unwrap();
+        let plan = plan_import(
+            ConfigStore::load_versioned(&path).unwrap(),
+            ImportRequest {
+                agent,
+                identities: vec![],
+                scopes: vec![],
+                tags: BTreeMap::new(),
+            },
+        )
+        .unwrap();
+        assert!(plan.additions().is_empty());
+
+        let changed = initial.replace("retained comment", "external edit");
+        fs::write(&path, &changed).unwrap();
+        apply_import(&plan).unwrap();
+        assert_eq!(fs::read_to_string(path).unwrap(), changed);
     }
 
     #[test]
@@ -812,6 +843,10 @@ mod tests {
                         "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
                         Some("deploy-key"),
                     ),
+                    identity(
+                        "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y",
+                        Some("Duplicate fingerprint"),
+                    ),
                 ],
                 scopes: vec![],
                 tags: BTreeMap::new(),
@@ -825,6 +860,50 @@ mod tests {
                 .map(|entry| entry.alias().as_str())
                 .collect::<Vec<_>>(),
             ["deploy-key", "deploy-key-2"]
+        );
+        assert_eq!(plan.already_configured(), 0);
+    }
+
+    #[test]
+    fn unusable_import_comments_use_deterministic_alias_fallbacks() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        let agent = AgentName::new("agent").unwrap();
+        let mut document = ConfigDocument::empty();
+        document
+            .add_agent(agent.clone(), directory.path().join("agent.sock"))
+            .unwrap();
+        ConfigStore::save(&path, &document).unwrap();
+        let plan = plan_import(
+            ConfigStore::load_versioned(&path).unwrap(),
+            ImportRequest {
+                agent,
+                identities: vec![
+                    identity(
+                        "SHA256:Wda9mr6okK7Rb2vORVFqw5ARYcfo6HxnVLJ4Ru1K8+Y",
+                        Some("  Multi___separator!!! Key  "),
+                    ),
+                    identity(
+                        "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                        Some("---"),
+                    ),
+                    identity(
+                        "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU",
+                        Some(""),
+                    ),
+                ],
+                scopes: vec![],
+                tags: BTreeMap::new(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.additions()
+                .iter()
+                .map(|entry| entry.alias().as_str())
+                .collect::<Vec<_>>(),
+            ["multi-separator-key", "identity-2", "identity-3"]
         );
     }
 

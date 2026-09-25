@@ -46,7 +46,7 @@ pub fn import_agent(
     }
 
     if !dry_run && !plan.additions().is_empty() {
-        management::apply_import(path.as_path(), &plan)?;
+        management::apply_import(&plan)?;
     }
     print_summary(&name, &plan, dry_run);
     Ok(())

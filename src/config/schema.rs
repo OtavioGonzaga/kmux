@@ -579,6 +579,7 @@ pub struct ConfigRevision([u8; 32]);
 pub struct ConfigSnapshot {
     document: ConfigDocument,
     revision: ConfigRevision,
+    source_path: PathBuf,
 }
 
 impl ConfigSnapshot {
@@ -590,6 +591,11 @@ impl ConfigSnapshot {
     /// Returns the content revision captured during loading.
     pub fn revision(&self) -> &ConfigRevision {
         &self.revision
+    }
+
+    /// Returns the canonical path of the configuration file this snapshot was loaded from.
+    pub fn source_path(&self) -> &Path {
+        &self.source_path
     }
 }
 
@@ -636,9 +642,14 @@ impl ConfigStore {
     /// Loads a configuration document and captures a content-based revision.
     pub fn load_versioned(path: &Path) -> Result<ConfigSnapshot, ConfigError> {
         let (document, source) = Self::load_source(path)?;
+        let source_path = fs::canonicalize(path).map_err(|source| ConfigError::Read {
+            path: path.to_owned(),
+            source,
+        })?;
         Ok(ConfigSnapshot {
             document,
             revision: revision(&source),
+            source_path,
         })
     }
 
