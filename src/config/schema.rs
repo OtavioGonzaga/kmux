@@ -636,16 +636,14 @@ impl ConfigStore {
 
     /// Loads and validates a serialized configuration document.
     pub fn load(path: &Path) -> Result<ConfigDocument, ConfigError> {
-        Self::load_source(path).map(|(document, _)| document)
+        let path = canonical_existing_path(path)?;
+        Self::load_source(&path).map(|(document, _)| document)
     }
 
     /// Loads a configuration document and captures a content-based revision.
     pub fn load_versioned(path: &Path) -> Result<ConfigSnapshot, ConfigError> {
-        let (document, source) = Self::load_source(path)?;
-        let source_path = fs::canonicalize(path).map_err(|source| ConfigError::Read {
-            path: path.to_owned(),
-            source,
-        })?;
+        let source_path = canonical_existing_path(path)?;
+        let (document, source) = Self::load_source(&source_path)?;
         Ok(ConfigSnapshot {
             document,
             revision: revision(&source),
@@ -683,19 +681,20 @@ impl ConfigStore {
     where
         F: FnOnce(&mut ConfigDocument) -> Result<(), ConfigError>,
     {
-        let _lock = ConfigLock::acquire(path)?;
-        let snapshot = Self::load_versioned(path)?;
+        let path = normalized_write_path(path)?;
+        let _lock = ConfigLock::acquire(&path)?;
+        let snapshot = Self::load_versioned(&path)?;
         let original = snapshot.document.clone();
         let mut document = snapshot.document;
         mutate(&mut document)?;
         document.validate()?;
         if document.is_unchanged_from(&original) {
-            if current_revision(path)?.as_ref() != Some(&snapshot.revision) {
+            if current_revision(&path)?.as_ref() != Some(&snapshot.revision) {
                 return Err(ConfigError::Conflict(path.to_owned()));
             }
             return Ok(());
         }
-        Self::save_unlocked(path, &document, Some(&snapshot.revision))
+        Self::save_unlocked(&path, &document, Some(&snapshot.revision))
     }
 
     /// Saves a document only if the file still has the revision in `snapshot`.
@@ -707,8 +706,12 @@ impl ConfigStore {
         snapshot: &ConfigSnapshot,
         document: &ConfigDocument,
     ) -> Result<(), ConfigError> {
-        let _lock = ConfigLock::acquire(path)?;
-        Self::save_unlocked(path, document, Some(&snapshot.revision))
+        let path = normalized_write_path(path)?;
+        if path != snapshot.source_path {
+            return Err(ConfigError::Conflict(path));
+        }
+        let _lock = ConfigLock::acquire(&path)?;
+        Self::save_unlocked(&path, document, Some(&snapshot.revision))
     }
 
     /// Validates and atomically writes a document with private permissions under the process lock.
@@ -717,8 +720,9 @@ impl ConfigStore {
     /// [`Self::save_if_unchanged`] when the document was derived from a previously loaded file and
     /// overwriting intervening edits would be unsafe.
     pub fn save(path: &Path, document: &ConfigDocument) -> Result<(), ConfigError> {
-        let _lock = ConfigLock::acquire(path)?;
-        Self::save_unlocked(path, document, None)
+        let path = normalized_write_path(path)?;
+        let _lock = ConfigLock::acquire(&path)?;
+        Self::save_unlocked(&path, document, None)
     }
 
     fn save_unlocked(
@@ -836,6 +840,56 @@ impl ConfigStore {
 
 fn revision(source: &str) -> ConfigRevision {
     ConfigRevision(Sha256::digest(source.as_bytes()).into())
+}
+
+fn canonical_existing_path(path: &Path) -> Result<PathBuf, ConfigError> {
+    fs::canonicalize(path).map_err(|source| ConfigError::Read {
+        path: path.to_owned(),
+        source,
+    })
+}
+
+/// Resolves existing symlinks and parent-directory aliases before deriving lock paths or
+/// replacing a configuration. For a not-yet-created file, canonicalize its parent directory.
+fn normalized_write_path(path: &Path) -> Result<PathBuf, ConfigError> {
+    match fs::canonicalize(path) {
+        Ok(path) => return Ok(path),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+            if fs::symlink_metadata(path).is_ok() {
+                return Err(ConfigError::Write {
+                    path: path.to_owned(),
+                    source,
+                });
+            }
+        }
+        Err(source) => {
+            return Err(ConfigError::Write {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    }
+
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let filename = path.file_name().ok_or_else(|| ConfigError::Write {
+        path: path.to_owned(),
+        source: io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "configuration path has no filename",
+        ),
+    })?;
+    fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
+        path: parent.to_owned(),
+        source,
+    })?;
+    let parent = fs::canonicalize(parent).map_err(|source| ConfigError::Write {
+        path: parent.to_owned(),
+        source,
+    })?;
+    Ok(parent.join(filename))
 }
 
 fn current_revision(path: &Path) -> Result<Option<ConfigRevision>, ConfigError> {
@@ -1168,7 +1222,7 @@ struct KeyDocument {
 mod tests {
     use super::{
         AgentDocument, AgentKind, Config, ConfigDocument, ConfigError, ConfigStore, KeyDocument,
-        MAX_CONFIG_BYTES, MAX_YAML_ALIASES, SUPPORTED_VERSION, lock_path,
+        MAX_CONFIG_BYTES, MAX_YAML_ALIASES, SUPPORTED_VERSION, lock_path, normalized_write_path,
     };
     use crate::agent::{AgentDefinition, AgentName};
     use crate::catalog::{Fingerprint, KeyAlias, KeyCatalog, KeyEntry};
@@ -1177,6 +1231,7 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::symlink;
     use std::path::Path;
     use std::process::Command;
     use std::str::FromStr;
@@ -1738,6 +1793,86 @@ mod tests {
             Err(ConfigError::Conflict(conflict_path)) if conflict_path == path
         ));
         assert_eq!(fs::read_to_string(&path).unwrap(), "version = [broken\n");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn persistence_through_a_symlink_uses_the_target_and_shared_lock_path() {
+        let directory = temporary_directory();
+        let target = directory.join("config.toml");
+        let alias = directory.join("config-alias.toml");
+        let mut document = ConfigDocument::empty();
+        document
+            .add_agent(AgentName::new("base").unwrap(), "/tmp/base.sock".into())
+            .unwrap();
+        ConfigStore::save(&target, &document).unwrap();
+        symlink(&target, &alias).unwrap();
+
+        let snapshot = ConfigStore::load_versioned(&alias).unwrap();
+        assert_eq!(snapshot.source_path(), fs::canonicalize(&target).unwrap());
+        assert_eq!(
+            lock_path(&normalized_write_path(&alias).unwrap()),
+            lock_path(&normalized_write_path(&target).unwrap())
+        );
+
+        ConfigStore::update(&alias, |document| {
+            document.add_agent(AgentName::new("via-link").unwrap(), "/tmp/link.sock".into())
+        })
+        .unwrap();
+        assert!(
+            fs::symlink_metadata(&alias)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+
+        ConfigStore::update(&target, |document| {
+            document.add_agent(
+                AgentName::new("via-target").unwrap(),
+                "/tmp/target.sock".into(),
+            )
+        })
+        .unwrap();
+        assert_eq!(Config::load(&alias).unwrap().agents().len(), 3);
+
+        let snapshot = ConfigStore::load_versioned(&alias).unwrap();
+        let mut replacement = snapshot.document().clone();
+        replacement
+            .add_agent(
+                AgentName::new("saved-through-link").unwrap(),
+                "/tmp/save.sock".into(),
+            )
+            .unwrap();
+        ConfigStore::save_if_unchanged(&alias, &snapshot, &replacement).unwrap();
+        assert!(
+            fs::symlink_metadata(&alias)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(Config::load(&target).unwrap().agents().len(), 4);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn versioned_snapshot_cannot_be_saved_to_a_different_identical_file() {
+        let directory = temporary_directory();
+        let source = directory.join("source.toml");
+        let other = directory.join("other.toml");
+        let document = ConfigDocument::empty();
+        ConfigStore::save(&source, &document).unwrap();
+        ConfigStore::save(&other, &document).unwrap();
+        let snapshot = ConfigStore::load_versioned(&source).unwrap();
+        let mut replacement = snapshot.document().clone();
+        replacement
+            .add_agent(AgentName::new("added").unwrap(), "/tmp/added.sock".into())
+            .unwrap();
+
+        assert!(matches!(
+            ConfigStore::save_if_unchanged(&other, &snapshot, &replacement),
+            Err(ConfigError::Conflict(_))
+        ));
+        assert!(Config::load(&other).unwrap().agents().is_empty());
         fs::remove_dir_all(directory).unwrap();
     }
 

@@ -9,6 +9,8 @@ Versioning.
 
 ### Changed
 
+- Normalize configuration paths before persistence so symlink aliases share the
+  same lock and atomic replacement target.
 - Expose reusable import planning and revision-checked application APIs, bound
   to their source configuration and avoiding writes for empty plans; keep import
   presentation and agent querying in the CLI.
