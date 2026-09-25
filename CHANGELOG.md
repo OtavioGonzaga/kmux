@@ -7,6 +7,12 @@ Versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- Serialize configuration writes with a process lock, add revision-checked
+  saves, and migrate agent/key mutations and agent imports to transactional
+  updates.
+
 ## [0.4.0] - 2026-09-25
 
 ### Added

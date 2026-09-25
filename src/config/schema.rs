@@ -4,11 +4,13 @@ use crate::agent::{AgentDefinition, AgentName};
 use crate::catalog::{Fingerprint, KeyAlias, KeyCatalog, KeyEntry};
 use crate::scope::ScopePath;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::env;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{self, Read};
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -300,6 +302,12 @@ impl ConfigDocument {
         self.version == other.version && self.agents == other.agents && self.keys == other.keys
     }
 
+    fn is_unchanged_from(&self, other: &Self) -> bool {
+        self.matches_serialized(other)
+            && self.toml.as_ref().map(ToString::to_string)
+                == other.toml.as_ref().map(ToString::to_string)
+    }
+
     fn insert_toml_agent(&mut self, name: &AgentName) -> Result<(), ConfigError> {
         let Some(document) = self.toml.as_mut() else {
             return Ok(());
@@ -374,6 +382,29 @@ impl ConfigDocument {
     }
 }
 
+/// An opaque content revision used to detect changes made since a configuration was loaded.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConfigRevision([u8; 32]);
+
+/// A validated configuration document together with the revision it was loaded from.
+#[derive(Clone, Debug)]
+pub struct ConfigSnapshot {
+    document: ConfigDocument,
+    revision: ConfigRevision,
+}
+
+impl ConfigSnapshot {
+    /// Returns the loaded document.
+    pub fn document(&self) -> &ConfigDocument {
+        &self.document
+    }
+
+    /// Returns the content revision captured during loading.
+    pub fn revision(&self) -> &ConfigRevision {
+        &self.revision
+    }
+}
+
 fn toml_root_table<'a>(
     document: &'a mut DocumentMut,
     name: &str,
@@ -411,6 +442,19 @@ impl ConfigStore {
 
     /// Loads and validates a serialized configuration document.
     pub fn load(path: &Path) -> Result<ConfigDocument, ConfigError> {
+        Self::load_source(path).map(|(document, _)| document)
+    }
+
+    /// Loads a configuration document and captures a content-based revision.
+    pub fn load_versioned(path: &Path) -> Result<ConfigSnapshot, ConfigError> {
+        let (document, source) = Self::load_source(path)?;
+        Ok(ConfigSnapshot {
+            document,
+            revision: revision(&source),
+        })
+    }
+
+    fn load_source(path: &Path) -> Result<(ConfigDocument, String), ConfigError> {
         let format = ConfigFormat::from_path(path)?;
         let decoder: &dyn ConfigDecoder = match format {
             ConfigFormat::Yaml => &YamlConfigDecoder,
@@ -426,11 +470,63 @@ impl ConfigStore {
                 })?);
         }
         document.validate()?;
-        Ok(document)
+        Ok((document, source))
     }
 
-    /// Validates and atomically writes a document with private permissions.
+    /// Loads, mutates, validates, and atomically persists a configuration under a process lock.
+    ///
+    /// The lock is held while `mutate` runs, so cooperating writers cannot overwrite one another.
+    /// A content revision is checked again before persistence to detect edits by non-cooperating
+    /// writers. Detection of non-cooperating writers is best-effort: such writers do not acquire
+    /// this lock, so an edit in the small interval between the final revision check and atomic
+    /// replacement cannot be excluded.
+    pub fn update<F>(path: &Path, mutate: F) -> Result<(), ConfigError>
+    where
+        F: FnOnce(&mut ConfigDocument) -> Result<(), ConfigError>,
+    {
+        let _lock = ConfigLock::acquire(path)?;
+        let snapshot = Self::load_versioned(path)?;
+        let original = snapshot.document.clone();
+        let mut document = snapshot.document;
+        mutate(&mut document)?;
+        document.validate()?;
+        if document.is_unchanged_from(&original) {
+            if current_revision(path)?.as_ref() != Some(&snapshot.revision) {
+                return Err(ConfigError::Conflict(path.to_owned()));
+            }
+            return Ok(());
+        }
+        Self::save_unlocked(path, &document, Some(&snapshot.revision))
+    }
+
+    /// Saves a document only if the file still has the revision in `snapshot`.
+    ///
+    /// Cooperating writers are serialized by the process lock. Detection of changes by
+    /// non-cooperating tools is best-effort; edits can still race the final atomic replacement.
+    pub fn save_if_unchanged(
+        path: &Path,
+        snapshot: &ConfigSnapshot,
+        document: &ConfigDocument,
+    ) -> Result<(), ConfigError> {
+        let _lock = ConfigLock::acquire(path)?;
+        Self::save_unlocked(path, document, Some(&snapshot.revision))
+    }
+
+    /// Validates and atomically writes a document with private permissions under the process lock.
+    ///
+    /// This operation is unconditional with respect to the document's origin. Use
+    /// [`Self::save_if_unchanged`] when the document was derived from a previously loaded file and
+    /// overwriting intervening edits would be unsafe.
     pub fn save(path: &Path, document: &ConfigDocument) -> Result<(), ConfigError> {
+        let _lock = ConfigLock::acquire(path)?;
+        Self::save_unlocked(path, document, None)
+    }
+
+    fn save_unlocked(
+        path: &Path,
+        document: &ConfigDocument,
+        expected_revision: Option<&ConfigRevision>,
+    ) -> Result<(), ConfigError> {
         let document = document.clone().normalized();
         document.validate()?;
         let output = match ConfigFormat::from_path(path)? {
@@ -496,6 +592,11 @@ impl ConfigStore {
                 path: temporary.path().to_owned(),
                 source,
             })?;
+        if let Some(expected_revision) = expected_revision
+            && current_revision(path)?.as_ref() != Some(expected_revision)
+        {
+            return Err(ConfigError::Conflict(path.to_owned()));
+        }
         temporary
             .persist(path)
             .map_err(|error| ConfigError::Write {
@@ -534,6 +635,87 @@ impl ConfigStore {
     }
 }
 
+fn revision(source: &str) -> ConfigRevision {
+    ConfigRevision(Sha256::digest(source.as_bytes()).into())
+}
+
+fn current_revision(path: &Path) -> Result<Option<ConfigRevision>, ConfigError> {
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(ConfigError::Read {
+                path: path.to_owned(),
+                source,
+            });
+        }
+    };
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 8192];
+    loop {
+        let count = file.read(&mut buffer).map_err(|source| ConfigError::Read {
+            path: path.to_owned(),
+            source,
+        })?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(Some(ConfigRevision(hasher.finalize().into())))
+}
+
+struct ConfigLock(File);
+
+impl ConfigLock {
+    fn acquire(path: &Path) -> Result<Self, ConfigError> {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        fs::create_dir_all(parent).map_err(|source| ConfigError::Write {
+            path: parent.to_owned(),
+            source,
+        })?;
+        let lock_path = lock_path(path);
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .mode(0o600)
+            .open(&lock_path)
+            .map_err(|source| ConfigError::Write {
+                path: lock_path.clone(),
+                source,
+            })?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|source| ConfigError::Write {
+                path: lock_path.clone(),
+                source,
+            })?;
+        rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive).map_err(|source| {
+            ConfigError::Write {
+                path: lock_path,
+                source: source.into(),
+            }
+        })?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        let _ = rustix::fs::flock(&self.0, rustix::fs::FlockOperation::Unlock);
+    }
+}
+
+fn lock_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".lock");
+    PathBuf::from(name)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 /// A discovered configuration filesystem path.
 pub struct ConfigPath(PathBuf);
@@ -548,6 +730,8 @@ impl ConfigPath {
 #[derive(Debug)]
 /// An error loading, validating, discovering, or saving configuration.
 pub enum ConfigError {
+    /// The configuration changed since the supplied snapshot was loaded.
+    Conflict(PathBuf),
     /// Reading a configuration file failed.
     Read {
         /// Path that could not be read.
@@ -598,6 +782,11 @@ pub enum ConfigError {
 impl fmt::Display for ConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Conflict(path) => write!(
+                formatter,
+                "configuration '{}' changed since it was loaded; refusing to overwrite it",
+                path.display()
+            ),
             Self::Read { path, source } => {
                 write!(formatter, "could not read '{}': {source}", path.display())
             }
@@ -780,7 +969,7 @@ struct KeyDocument {
 mod tests {
     use super::{
         AgentDocument, AgentKind, Config, ConfigDocument, ConfigError, ConfigStore, KeyDocument,
-        MAX_CONFIG_BYTES, MAX_YAML_ALIASES, SUPPORTED_VERSION,
+        MAX_CONFIG_BYTES, MAX_YAML_ALIASES, SUPPORTED_VERSION, lock_path,
     };
     use crate::agent::{AgentDefinition, AgentName};
     use crate::catalog::{Fingerprint, KeyAlias, KeyCatalog, KeyEntry};
@@ -789,6 +978,8 @@ mod tests {
     use std::fs;
     use std::os::unix::fs::MetadataExt;
     use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+    use std::process::Command;
     use std::str::FromStr;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1332,6 +1523,169 @@ mod tests {
             Err(ConfigError::TooLarge { .. })
         ));
         assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn versioned_save_rejects_external_changes() {
+        let directory = temporary_directory();
+        let path = directory.join("config.toml");
+        ConfigStore::save(&path, &ConfigDocument::empty()).unwrap();
+        let snapshot = ConfigStore::load_versioned(&path).unwrap();
+        fs::write(&path, "version = [broken\n").unwrap();
+
+        assert!(matches!(
+            ConfigStore::save_if_unchanged(&path, &snapshot, snapshot.document()),
+            Err(ConfigError::Conflict(conflict_path)) if conflict_path == path
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), "version = [broken\n");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn concurrent_updates_preserve_both_changes() {
+        let directory = temporary_directory();
+        let path = directory.join("config.toml");
+        ConfigStore::save(&path, &ConfigDocument::empty()).unwrap();
+        let first_path = path.clone();
+        let second_path = path.clone();
+        let first = std::thread::spawn(move || {
+            ConfigStore::update(&first_path, |document| {
+                document.add_agent(AgentName::new("first").unwrap(), "/tmp/first.sock".into())
+            })
+        });
+        let second = std::thread::spawn(move || {
+            ConfigStore::update(&second_path, |document| {
+                document.add_agent(AgentName::new("second").unwrap(), "/tmp/second.sock".into())
+            })
+        });
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
+
+        assert_eq!(
+            fs::metadata(lock_path(&path)).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let config = ConfigStore::load(&path).unwrap().validate().unwrap();
+        assert!(
+            config
+                .agents()
+                .contains_key(&AgentName::new("first").unwrap())
+        );
+        assert!(
+            config
+                .agents()
+                .contains_key(&AgentName::new("second").unwrap())
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn config_update_worker() {
+        let Ok(path) = std::env::var("KMUX_TEST_CONFIG_UPDATE_PATH") else {
+            return;
+        };
+        let name = std::env::var("KMUX_TEST_CONFIG_UPDATE_AGENT").unwrap();
+        ConfigStore::update(Path::new(&path), |document| {
+            document.add_agent(
+                AgentName::new(name).unwrap(),
+                "/tmp/process-agent.sock".into(),
+            )
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn independent_process_updates_preserve_both_changes() {
+        let directory = temporary_directory();
+        let path = directory.join("config.toml");
+        ConfigStore::save(&path, &ConfigDocument::empty()).unwrap();
+        let executable = std::env::current_exe().unwrap();
+        let mut children = ["process-first", "process-second"].map(|name| {
+            Command::new(&executable)
+                .arg("--exact")
+                .arg("config::schema::tests::config_update_worker")
+                .env("KMUX_TEST_CONFIG_UPDATE_PATH", &path)
+                .env("KMUX_TEST_CONFIG_UPDATE_AGENT", name)
+                .spawn()
+                .unwrap()
+        });
+        for child in &mut children {
+            assert!(child.wait().unwrap().success());
+        }
+
+        let config = ConfigStore::load(&path).unwrap().validate().unwrap();
+        assert!(
+            config
+                .agents()
+                .contains_key(&AgentName::new("process-first").unwrap())
+        );
+        assert!(
+            config
+                .agents()
+                .contains_key(&AgentName::new("process-second").unwrap())
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn external_edit_during_update_returns_conflict_without_overwriting() {
+        let directory = temporary_directory();
+        let path = directory.join("config.toml");
+        ConfigStore::save(&path, &ConfigDocument::empty()).unwrap();
+        let external_content = "version = [externally, changed\n";
+
+        let result = ConfigStore::update(&path, |document| {
+            fs::write(&path, external_content).map_err(|source| ConfigError::Write {
+                path: path.clone(),
+                source,
+            })?;
+            document.add_agent(AgentName::new("work").unwrap(), "/tmp/work.sock".into())
+        });
+
+        assert!(
+            matches!(result, Err(ConfigError::Conflict(conflict_path)) if conflict_path == path)
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), external_content);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn failed_update_preserves_file_and_releases_lock() {
+        let directory = temporary_directory();
+        let path = directory.join("config.toml");
+        let original = "version = 1\n";
+        fs::write(&path, original).unwrap();
+
+        assert!(matches!(
+            ConfigStore::update(&path, |_| Err(ConfigError::Validation(
+                "injected failure".into()
+            ))),
+            Err(ConfigError::Validation(_))
+        ));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        ConfigStore::update(&path, |document| {
+            document.add_agent(AgentName::new("work").unwrap(), "/tmp/work.sock".into())
+        })
+        .unwrap();
+        assert!(ConfigStore::load(&path).unwrap().validate().is_ok());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn transaction_preserves_unmodified_toml_comments_and_formatting() {
+        let directory = temporary_directory();
+        let path = directory.join("config.toml");
+        fs::write(&path, COMMENTED_TOML).unwrap();
+        ConfigStore::update(&path, |document| {
+            document.add_agent(AgentName::new("backup").unwrap(), "/tmp/backup.sock".into())
+        })
+        .unwrap();
+
+        let output = fs::read_to_string(&path).unwrap();
+        assert!(output.contains("# My personal SSH configuration\nversion = 1"));
+        assert!(output.contains("type   = 'unix'\nsocket = '/tmp/bitwarden.sock' # Local socket"));
+        assert!(output.contains("[agents.backup]"));
         fs::remove_dir_all(directory).unwrap();
     }
 }

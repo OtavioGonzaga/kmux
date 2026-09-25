@@ -2,7 +2,7 @@ use crate::cli::OutputFormat;
 use crate::commands::key::parse_tags;
 use kmux::agent::{AgentName, UnixSocketAgent, UpstreamAgent};
 use kmux::catalog::{Identity, KeyAlias, KeyEntry};
-use kmux::config::{Config, ConfigDocument, ConfigPath, ConfigStore};
+use kmux::config::{Config, ConfigDocument, ConfigError, ConfigPath, ConfigStore};
 use kmux::scope::ScopePath;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -37,7 +37,14 @@ pub fn import_agent(
         format!("unknown agent '{name}', run 'kmux agent add --socket /path/to/agent.sock {name}'")
     })?;
     let identities = UnixSocketAgent::new(definition.socket().to_owned()).identities()?;
-    let plan = plan_import(&document, &config, &name, identities, scopes, tags)?;
+    let mut plan = plan_import(
+        &document,
+        &config,
+        &name,
+        identities.clone(),
+        scopes.clone(),
+        tags.clone(),
+    )?;
 
     if stdout {
         print!(
@@ -48,7 +55,25 @@ pub fn import_agent(
     }
 
     if !dry_run && !plan.additions.is_empty() {
-        ConfigStore::save(path.as_path(), &plan.document)?;
+        let mut committed_plan = None;
+        ConfigStore::update(path.as_path(), |current_document| {
+            let current_config = current_document
+                .validate()
+                .map_err(|error| ConfigError::Validation(error.to_string()))?;
+            let updated_plan = plan_import(
+                current_document,
+                &current_config,
+                &name,
+                identities,
+                scopes,
+                tags,
+            )
+            .map_err(|error| ConfigError::Validation(error.to_string()))?;
+            *current_document = updated_plan.document.clone();
+            committed_plan = Some(updated_plan);
+            Ok(())
+        })?;
+        plan = committed_plan.expect("the import transaction always creates a plan");
     }
     print_summary(&name, &plan, dry_run);
     Ok(())

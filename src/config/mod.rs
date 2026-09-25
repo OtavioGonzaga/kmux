@@ -3,4 +3,7 @@
 mod schema;
 
 /// Configuration model, format selection, and persistence APIs.
-pub use schema::{Config, ConfigDocument, ConfigError, ConfigFormat, ConfigPath, ConfigStore};
+pub use schema::{
+    Config, ConfigDocument, ConfigError, ConfigFormat, ConfigPath, ConfigRevision, ConfigSnapshot,
+    ConfigStore,
+};

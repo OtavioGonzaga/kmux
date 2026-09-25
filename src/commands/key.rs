@@ -61,7 +61,7 @@ fn add_with(
         || comment.is_some()
         || !scopes.is_empty()
         || !tags.is_empty();
-    let mut document = ConfigStore::load(path.as_path())?;
+    let document = ConfigStore::load(path.as_path())?;
     let entry = if has_flags {
         let agent =
             agent.ok_or("missing required --agent when using non-interactive key creation")?;
@@ -71,8 +71,7 @@ fn add_with(
     } else {
         interactive_entry_with(&document.validate()?, alias, prompter, identities)?
     };
-    document.add_key(entry)?;
-    ConfigStore::save(path.as_path(), &document)?;
+    ConfigStore::update(path.as_path(), move |document| document.add_key(entry))?;
     Ok(())
 }
 
@@ -99,9 +98,7 @@ fn remove_with(
             return Ok(());
         }
     }
-    let mut document = ConfigStore::load(path.as_path())?;
-    document.remove_key(&alias)?;
-    ConfigStore::save(path.as_path(), &document)?;
+    ConfigStore::update(path.as_path(), move |document| document.remove_key(&alias))?;
     Ok(())
 }
 
