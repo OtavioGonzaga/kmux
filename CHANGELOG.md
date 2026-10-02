@@ -7,6 +7,8 @@ Versioning.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-02
+
 ### Changed
 
 - Normalize configuration paths before persistence so symlink aliases share the
