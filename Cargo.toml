@@ -10,6 +10,7 @@ categories = ["command-line-utilities", "authentication"]
 keywords = ["ssh", "agent", "security"]
 repository = "https://github.com/OtavioGonzaga/kmux"
 readme = "README.md"
+authors = ["Otavio Gonzaga <otaviolgonzaga@gmail.com>"]
 
 [lib]
 name = "kmux"

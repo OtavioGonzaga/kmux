@@ -17,7 +17,8 @@ Use `AGENTS.md` as the shared entry point for instructions for all AI coding
 agents. Keep agent files in `.agents/` and avoid tool/vendor-specific
 directories.
 
-- Persistent shared knowledge (versioned) belongs in `.agents/memory/`.
+- Persistent project knowledge belongs in the ai-memory server, not in a local
+  `.agents/memory/` directory.
 - Reusable prompts (versioned) belong in `.agents/prompts/`.
 - Reusable agent skills (versioned) belong in `.agents/skills/`.
 - Temporary artifacts (not versioned) belong in `.agents/artifacts/`.
@@ -59,7 +60,11 @@ next forget sweep, and a TTL outranks `pinned`. ai-memory is the cross-harness
 memory of record for this project: if the harness you run in has its own local
 memory feature, do not keep durable project facts there in parallel — a
 harness-local store is invisible to every other agent and fragments continuity,
-so capture them here instead.
+so capture them here instead. A reviewed decision record kept in the repository
+(an ADR directory, a Keep the Why `context/` tree) is not a harness-local store:
+when the project keeps one, record decisions there under the project's
+convention; ai-memory keeps recall, handoffs and session history and does not
+duplicate that record as a page.
 
 For ranking diagnosis, opt-in query explanations add bounded score provenance to
 project/scopes hits. Cross-project search uses a distinct FTS-only ranker and
@@ -98,6 +103,11 @@ must ..."), write it in the project's canonical agent instruction file. Many
 projects use CLAUDE.md for Claude Code and AGENTS.md for Codex / OpenCode /
 OpenCode 2 / Cursor / Gemini CLI / Grok Build CLI / Kimi Code / Kiro CLI /
 Command Code, but if the project says one file is canonical, use that file.
+
+Claude Code loads `CLAUDE.md` and does not read `AGENTS.md`. In a project where
+`AGENTS.md` is canonical, give `CLAUDE.md` a bare `@AGENTS.md` import line.
+Without it a rule written to `AGENTS.md` is absent from context at session start
+and reaches Claude Code only if the agent opens the file.
 
 If the rule is a standing _user/team_ preference that should apply to every
 project (tech choices, code style, personal conventions), save it to ai-memory's
