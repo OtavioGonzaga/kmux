@@ -2,7 +2,6 @@
 
 .agents/*
 !.agents/README.md
-!.agents/memory/
 !.agents/prompts/
 !.agents/skills/
 !.agents/skills/**

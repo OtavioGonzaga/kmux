@@ -8,7 +8,6 @@ consistent layout that is agnostic to any AI tool or provider.
 
 | Directory    | Description                                    | Versioned |
 | :----------- | :--------------------------------------------- | :-------: |
-| `memory/`    | Persistent and strategic project knowledge     |    ✅     |
 | `prompts/`   | Optimized and reusable prompts for agents      |    ✅     |
 | `skills/`    | Reusable agent skills and operational guidance |    ✅     |
 | `artifacts/` | Temporary (ephemeral) work files               |    ❌     |
@@ -16,11 +15,6 @@ consistent layout that is agnostic to any AI tool or provider.
 ---
 
 ## Details
-
-### `memory/` (Versioned)
-
-Stores long-term knowledge. Documentation that does not change frequently but is
-crucial for agents to understand the domain or architecture context.
 
 ### `prompts/` (Versioned)
 
@@ -40,22 +34,20 @@ reports. It must not be versioned.
 
 ---
 
-> **Important note:** `memory/`, `prompts/`, `skills/`, and this file
-> (`README.md`) should be committed to version control (Git). The `artifacts/`
-> folder is ephemeral and configured to be ignored.
+> **Important note:** `prompts/`, `skills/`, and this file (`README.md`) should
+> be committed to version control (Git). The `artifacts/` folder is ephemeral
+> and configured to be ignored.
 
 ## How to Contribute
 
 - **Add a Prompt:** Create a file in `prompts/` with a clear description at the
   top
-- **Add Knowledge:** Create a Markdown file in `memory/` with domain context
 - **Add a Skill:** Create a directory in `skills/` with a `SKILL.md` entry point
 
 ## Versioning Criteria
 
-### Version (.agents/memory/, .agents/prompts/, and .agents/skills/)
+### Version (.agents/prompts/ and .agents/skills/)
 
-- Knowledge that is reusable by multiple agents
 - Instructions that evolve with the project
 - Documentation that changes infrequently
 - Skills and operational guidance shared by collaborators
@@ -68,5 +60,5 @@ reports. It must not be versioned.
 - Task-specific plans
 
 **Example:** An agent performs test coverage analysis → saves the report in
-`artifacts/`, but if it discovers a new testing pattern → documents it in
-`memory/`.
+`artifacts/`, but if it discovers a reusable workflow → documents it in a shared
+skill or prompt.
