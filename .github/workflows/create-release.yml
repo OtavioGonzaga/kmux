@@ -121,7 +121,7 @@ jobs:
           ! readelf -l dist/kmux | grep -Fq 'Requesting program interpreter'
           tar -czf "kmux-linux-$ASSET.tar.gz" -C dist kmux -C .. LICENSE README.md CHANGELOG.md
           sha256sum "kmux-linux-$ASSET.tar.gz" > "kmux-linux-$ASSET.tar.gz.sha256"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kmux-linux-${{ matrix.asset }}
           path: |
@@ -149,7 +149,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.prepare.outputs.release_commit_sha || needs.preflight.outputs.release_commit_sha }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: kmux-linux-${{ matrix.asset }}
           path: .
@@ -178,7 +178,7 @@ jobs:
           kmux --help >/dev/null
           sudo dpkg -r kmux
           sha256sum "$deb" > "$deb.sha256"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kmux-deb-${{ matrix.arch }}
           path: kmux_${{ inputs.version }}_${{ matrix.arch }}.deb*
@@ -193,7 +193,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.prepare.outputs.release_commit_sha || needs.preflight.outputs.release_commit_sha }}
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: kmux-*
           merge-multiple: true
@@ -226,7 +226,7 @@ jobs:
             printf 'Debian/Ubuntu: download the matching `.deb` and run `sudo dpkg -i kmux_%s_ARCH.deb`.\n\n' "$VERSION"
             printf 'Tarball: download `kmux-linux-ARCH.tar.gz` and verify assets with `sha256sum -c SHA256SUMS`.\n'
           } >> "$ASSETS/release-notes.md"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kmux-release-assets
           path: ${{ runner.temp }}/release-assets
@@ -268,7 +268,7 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.release_commit_sha || needs.preflight.outputs.release_commit_sha }}
           fetch-depth: 0
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: kmux-release-assets
           path: ${{ runner.temp }}/release-assets
