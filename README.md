@@ -1,5 +1,7 @@
 # kmux
 
+[![XERJ Corpus Hub contributor](https://hub.xerj.org/contributors/OtavioGonzaga/badge.svg)](https://hub.xerj.org/contributors/OtavioGonzaga)
+
 `kmux` delegates a filtered set of SSH identities from an existing SSH agent to
 a child process. It is useful when an upstream agent exposes many SSH identities
 and clients such as OpenSSH try more identities than a remote server permits.
